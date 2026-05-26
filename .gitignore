@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local SQLite db (regenerated on first run via Drizzle migrations)
+db/*.db
+db/*.db-shm
+db/*.db-wal
+
+# uploads from runtime (per-job folders under public/uploads or /tmp)
+/uploads
+/tmp
