@@ -42,10 +42,17 @@ export async function GET(
     .where(eq(schema.tagRequirements.jobId, id))
     .all();
 
+  const risks = db
+    .select()
+    .from(schema.riskSignals)
+    .where(eq(schema.riskSignals.jobId, id))
+    .all();
+
   return NextResponse.json({
     job,
     documents,
     requirements,
     tagRequirements,
+    risks,
   });
 }

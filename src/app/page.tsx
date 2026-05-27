@@ -53,11 +53,27 @@ type TagRow = {
   reviewStatus: string;
 };
 
+type RiskSource = {
+  source: 'tcm' | 'ids' | 'pid_register' | 'sis_spec' | 'rfq_master';
+  text: string;
+  citation: Citation;
+};
+
+type RiskRow = {
+  id: string;
+  tagNo: string;
+  scope: string;
+  severity: 'high' | 'medium' | 'low';
+  reason: string;
+  sources: RiskSource[];
+};
+
 type FullJob = {
   job: { id: string; status: string };
   documents: DocOut[];
   requirements: RequirementRow[];
   tagRequirements: TagRow[];
+  risks: RiskRow[];
 };
 
 type EnrichStats = {
@@ -166,7 +182,13 @@ export default function Home() {
       }
       setEnrichStats(await enrichRes.json());
 
-      // Re-fetch full job state with enriched requirements.
+      // Then fire cross-doc risk detection (29 tags × 1 LLM call each).
+      // This is much faster than enrich but still ~10-20 seconds.
+      if (initialState.tagRequirements.length > 0) {
+        await fetch(`/api/jobs/${postBody.jobId}/risks`, { method: 'POST' });
+      }
+
+      // Re-fetch full job state with enriched requirements + risk signals.
       const getRes2 = await fetch(`/api/jobs/${postBody.jobId}`);
       setResult(await getRes2.json());
       setPhase('done');
@@ -264,6 +286,10 @@ export default function Home() {
 
       {phase === 'done' && result && <NoCorpusWarning data={result} stats={enrichStats} />}
 
+      {phase === 'done' && result && result.risks && result.risks.length > 0 && (
+        <RiskPanel risks={result.risks} />
+      )}
+
       {enrichStats && phase === 'done' && <EnrichSummary stats={enrichStats} />}
 
       {phase === 'done' && result && result.requirements.length > 0 && (
@@ -276,6 +302,134 @@ export default function Home() {
 }
 
 // ─── Components ──────────────────────────────────────────────────────────────
+
+/**
+ * Cross-document review-risk panel. Rendered FIRST in the demo flow:
+ * "before autofilling the TCM, the system cross-checks the response
+ * template against the technical evidence. It found N tag-level review
+ * risks where binding documents disagree."
+ *
+ * Each row collapses to severity + tag + one-line reason. Click to expand
+ * the TCM vs IDS side-by-side comparison with literal citations from
+ * each source — no opinions, just surfaced evidence.
+ */
+function RiskPanel({ risks }: { risks: RiskRow[] }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const counts = risks.reduce<Record<string, number>>((acc, r) => {
+    acc[r.severity] = (acc[r.severity] ?? 0) + 1;
+    return acc;
+  }, {});
+  const sorted = [...risks].sort((a, b) => {
+    const order = { high: 0, medium: 1, low: 2 };
+    return order[a.severity] - order[b.severity] || a.tagNo.localeCompare(b.tagNo);
+  });
+
+  function toggle(id: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  return (
+    <section className="mb-8 border-2 border-rose-300 rounded overflow-hidden bg-white">
+      <header className="px-4 py-3 bg-rose-50 border-b border-rose-200">
+        <h2 className="text-sm font-semibold text-rose-900">
+          ⚠ Cross-document review risks ({risks.length})
+        </h2>
+        <p className="text-[11px] text-rose-800 mt-1">
+          The TCM Tag-Level Confirmation and the IDS Attachment A disagree on
+          these tags. Surfaced for triage with literal citations from each
+          source — not auto-resolved.
+        </p>
+        <div className="flex gap-4 mt-2 text-[11px]">
+          {counts.high > 0 && (
+            <span className="text-rose-800">
+              <strong>{counts.high}</strong> high
+            </span>
+          )}
+          {counts.medium > 0 && (
+            <span className="text-amber-700">
+              <strong>{counts.medium}</strong> medium
+            </span>
+          )}
+          {counts.low > 0 && (
+            <span className="text-zinc-700">
+              <strong>{counts.low}</strong> low
+            </span>
+          )}
+        </div>
+      </header>
+      <ul className="divide-y divide-rose-100">
+        {sorted.map((r) => {
+          const isExpanded = expanded.has(r.id);
+          const tcmSource = r.sources.find((s) => s.source === 'tcm');
+          const idsSource = r.sources.find((s) => s.source === 'ids');
+          return (
+            <li key={r.id}>
+              <button
+                onClick={() => toggle(r.id)}
+                className="w-full text-left px-4 py-2 hover:bg-rose-50 flex items-center gap-3"
+              >
+                <SeverityPill severity={r.severity} />
+                <span className="font-medium text-xs w-24 shrink-0">{r.tagNo}</span>
+                <span className="text-xs text-zinc-700 flex-1">{r.reason}</span>
+                <span className="text-zinc-400 text-xs">{isExpanded ? '▴' : '▾'}</span>
+              </button>
+              {isExpanded && (
+                <div className="px-4 py-3 bg-rose-50/50 grid grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">
+                      TCM Tag-Level Confirmation
+                    </div>
+                    <blockquote className="text-zinc-800 border-l-2 border-zinc-400 pl-2">
+                      &ldquo;{tcmSource?.text ?? '(not provided)'}&rdquo;
+                    </blockquote>
+                    {tcmSource && (
+                      <p className="text-[10px] text-zinc-500 mt-1">
+                        Source: TCM column B, row matching {r.tagNo}
+                      </p>
+                    )}
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">
+                      IDS Attachment A
+                    </div>
+                    <blockquote className="text-zinc-800 border-l-2 border-rose-400 pl-2">
+                      &ldquo;{idsSource?.text ?? '(not located in IDS)'}&rdquo;
+                    </blockquote>
+                    {idsSource?.citation && (
+                      <p className="text-[10px] text-zinc-500 mt-1">
+                        Source: IDS page {idsSource.citation.page}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+function SeverityPill({ severity }: { severity: 'high' | 'medium' | 'low' }) {
+  const styles = {
+    high: 'bg-rose-100 text-rose-800 border-rose-300',
+    medium: 'bg-amber-100 text-amber-800 border-amber-300',
+    low: 'bg-zinc-100 text-zinc-700 border-zinc-300',
+  };
+  return (
+    <span
+      className={`inline-block px-2 py-0.5 rounded text-[10px] border font-medium uppercase tracking-wide ${styles[severity]}`}
+    >
+      {severity}
+    </span>
+  );
+}
 
 /**
  * Download bar for the vendor-facing outputs. The filled TCM is always
