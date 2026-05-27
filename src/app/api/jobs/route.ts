@@ -16,7 +16,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { eq } from 'drizzle-orm';
 import { NextResponse, type NextRequest } from 'next/server';
@@ -27,6 +27,7 @@ import {
   detectScanned,
 } from '@/lib/classify';
 import { db, schema } from '@/lib/db';
+import { isEffectivelyEmpty, parsePdf, PdfParseError } from '@/lib/pdf-parser';
 import { parseTcm, TcmParseError } from '@/lib/tcm-parser';
 
 // Force the Node runtime (we need fs access). Allow up to 60s — the bulk of
@@ -168,6 +169,76 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // ─── Index PDF text per page (for citation lookup later) ───────────────────
+
+  db.update(schema.jobs)
+    .set({ status: 'parsing_pdfs' })
+    .where(eq(schema.jobs.id, jobId))
+    .run();
+
+  type PdfStat = {
+    docId: string;
+    filename: string;
+    pageCount: number;
+    chunksInserted: number;
+    degraded: boolean;
+    error?: string;
+  };
+  const pdfStats: PdfStat[] = [];
+
+  for (const doc of documents) {
+    if (doc.mimeType !== 'application/pdf') continue;
+
+    const filePath = path.join(jobDir, doc.filename);
+    try {
+      const buffer = await readFile(filePath);
+      const parsed = await parsePdf(buffer);
+      const degraded = isEffectivelyEmpty(parsed);
+
+      db.update(schema.documents)
+        .set({ pageCount: parsed.pageCount })
+        .where(eq(schema.documents.id, doc.id))
+        .run();
+
+      let inserted = 0;
+      if (!degraded) {
+        db.transaction((tx) => {
+          for (const page of parsed.pages) {
+            if (page.text.length === 0) continue;
+            tx.insert(schema.chunks)
+              .values({
+                id: `${doc.id}:p${page.page}`,
+                documentId: doc.id,
+                page: page.page,
+                text: page.text,
+              })
+              .run();
+            inserted++;
+          }
+        });
+      }
+
+      pdfStats.push({
+        docId: doc.id,
+        filename: doc.filename,
+        pageCount: parsed.pageCount,
+        chunksInserted: inserted,
+        degraded,
+      });
+    } catch (e) {
+      const msg =
+        e instanceof PdfParseError ? e.message : e instanceof Error ? e.message : String(e);
+      pdfStats.push({
+        docId: doc.id,
+        filename: doc.filename,
+        pageCount: 0,
+        chunksInserted: 0,
+        degraded: true,
+        error: msg,
+      });
+    }
+  }
+
   db.update(schema.jobs)
     .set({ status: 'completed', completedAt: new Date() })
     .where(eq(schema.jobs.id, jobId))
@@ -178,5 +249,6 @@ export async function POST(req: NextRequest) {
     status: 'completed',
     documents,
     tcm: tcmStats,
+    pdfs: pdfStats,
   });
 }

@@ -74,6 +74,17 @@ if (postRes.status !== 200) {
   process.exit(1);
 }
 
+// pdfStats are reported per PDF: the fake PDFs in this fixture cannot be
+// parsed by unpdf, so both should come back flagged degraded with an error.
+// This proves the route handles bad PDFs gracefully (doesn't crash the job).
+if (postBody.pdfs) {
+  console.log(`\nPDF indexing reported for ${postBody.pdfs.length} file(s):`);
+  for (const p of postBody.pdfs) {
+    const flag = p.error ? `error: ${p.error.slice(0, 60)}…` : p.degraded ? 'degraded (no text)' : `${p.chunksInserted} chunks across ${p.pageCount} pages`;
+    console.log(`  ${p.filename.padEnd(50)} ${flag}`);
+  }
+}
+
 // ─── Verify via GET ──────────────────────────────────────────────────────────
 
 console.log(`\n→ GET ${API}/api/jobs/${postBody.jobId}`);
