@@ -266,12 +266,61 @@ export default function Home() {
 
       {enrichStats && phase === 'done' && <EnrichSummary stats={enrichStats} />}
 
+      {phase === 'done' && result && result.requirements.length > 0 && (
+        <ExportBar jobId={result.job.id} hasDeviations={result.requirements.some((r) => r.reviewStatus === 'deviation')} />
+      )}
+
       {result && <ResultView data={result} phase={phase} />}
     </main>
   );
 }
 
 // ─── Components ──────────────────────────────────────────────────────────────
+
+/**
+ * Download bar for the vendor-facing outputs. The filled TCM is always
+ * available once requirements are enriched. The DEV Register button only
+ * shows when at least one requirement is marked as a deviation.
+ */
+function ExportBar({
+  jobId,
+  hasDeviations,
+}: {
+  jobId: string;
+  hasDeviations: boolean;
+}) {
+  return (
+    <div className="mb-8 p-4 bg-zinc-900 text-zinc-100 rounded flex items-center justify-between gap-4">
+      <div className="text-xs">
+        <div className="font-semibold text-sm mb-1">Vendor deliverables</div>
+        <p className="text-zinc-300">
+          Download the official Helios templates pre-filled with reviewed
+          compliance + comments. Structure preserved per RFQ §8.2.
+        </p>
+      </div>
+      <div className="flex gap-2 shrink-0">
+        <a
+          href={`/api/jobs/${jobId}/export/tcm`}
+          download
+          className="px-4 py-2 rounded bg-emerald-500 text-zinc-900 font-medium text-xs hover:bg-emerald-400"
+        >
+          ⬇ filled TCM.xlsx
+        </a>
+        <button
+          disabled={!hasDeviations}
+          className="px-4 py-2 rounded bg-zinc-700 text-zinc-300 font-medium text-xs disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-600"
+          title={
+            hasDeviations
+              ? 'Download the Deviation/Exception Register'
+              : 'No deviations marked yet — mark requirements as deviation to populate this file'
+          }
+        >
+          ⬇ DEV Register.xlsx
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Surfaces when the TCM was parsed but the indexed corpus is empty (no PDFs
