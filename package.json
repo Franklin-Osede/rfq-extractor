@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --port 4711",
     "build": "next build",
-    "start": "next start",
+    "start": "next start --port 4711",
     "lint": "eslint",
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio --port 4712"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

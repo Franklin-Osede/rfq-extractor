@@ -14,7 +14,9 @@ cp .env.example .env.local   # paste your ANTHROPIC_API_KEY
 npm run dev
 ```
 
-Open <http://localhost:3000>, drop the 13 files from `samples/rfq_helios/` into the upload zone, and the review experience opens automatically. Sample API key is **not** committed; bring your own.
+Open <http://localhost:4711>, drop the 13 files from `samples/rfq_helios/` into the upload zone, and the review experience opens automatically. Sample API key is **not** committed; bring your own.
+
+> **Ports used:** Next.js dev runs on **4711**, Drizzle Studio on **4712** (run `npm run db:studio` to inspect the local SQLite). Picked to avoid the common dev range (3000/3030/4200/5000/5432/6379/7000). Override via `PORT` env var if needed.
 
 ## What this does
 
