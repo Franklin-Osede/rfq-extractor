@@ -24,12 +24,15 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    // suppressHydrationWarning on <body> because browser extensions (Grammarly,
-    // ColorZilla, etc.) inject data-* attributes after React renders and trigger
-    // benign hydration mismatches. This is cosmetic; not suppressing real bugs.
+    // suppressHydrationWarning on both <html> and <body> because browser
+    // extensions (Grammarly, Dark Reader, ColorZilla, etc.) inject data-*
+    // attributes and CSS classes after React renders, triggering benign
+    // hydration mismatches. This is cosmetic; we are not suppressing real
+    // bugs in our own code.
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col" suppressHydrationWarning>
         {children}
