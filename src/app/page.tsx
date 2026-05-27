@@ -241,6 +241,8 @@ export default function Home() {
         )}
       </section>
 
+      {phase === 'done' && result && <NoCorpusWarning data={result} stats={enrichStats} />}
+
       {enrichStats && phase === 'done' && <EnrichSummary stats={enrichStats} />}
 
       {result && <ResultView data={result} phase={phase} />}
@@ -249,6 +251,48 @@ export default function Home() {
 }
 
 // ─── Components ──────────────────────────────────────────────────────────────
+
+/**
+ * Surfaces when the TCM was parsed but the indexed corpus is empty (no PDFs
+ * with usable text). In that case every requirement defaults to "Review"
+ * because there is no evidence to cite from — the system being honest is
+ * the headline trust mechanism, but the user needs to know WHY.
+ */
+function NoCorpusWarning({
+  data,
+  stats,
+}: {
+  data: FullJob;
+  stats: EnrichStats | null;
+}) {
+  const hasReqs = data.requirements.length > 0;
+  const hasIndexedPdf = data.documents.some(
+    (d) => d.mimeType === 'application/pdf' && (d.pageCount ?? 0) > 0,
+  );
+  if (!hasReqs || hasIndexedPdf) return null;
+
+  const reviewAll = stats?.byCompliance?.['Review'] ?? data.requirements.length;
+
+  return (
+    <div className="mb-6 p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900">
+      <div className="font-semibold mb-1">⚠ No evidence corpus indexed</div>
+      <p>
+        The TCM was parsed ({data.requirements.length} requirements loaded),
+        but the upload had no PDFs to cite from — so all {reviewAll} requirements
+        default to <strong>Review</strong>. This is the system being honest:
+        without source documents to ground against, no confident compliance
+        suggestion is shown.
+      </p>
+      <p className="mt-2">
+        Add the source PDFs to enable evidence-backed enrichment:{' '}
+        <code className="px-1 bg-amber-100 rounded">RFQ_HEL-PRO-…</code>,{' '}
+        <code className="px-1 bg-amber-100 rounded">HEL-AZ2-IDS-INS-…</code>,{' '}
+        <code className="px-1 bg-amber-100 rounded">HEL-GS-…</code> (specs).
+        Then re-process.
+      </p>
+    </div>
+  );
+}
 
 function EnrichSummary({ stats }: { stats: EnrichStats }) {
   const total = stats.enriched + stats.failed;
