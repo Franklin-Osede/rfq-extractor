@@ -12,7 +12,7 @@
  * edit / mark deviation), export.
  */
 
-import { Fragment, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 
 type DocOut = {
   id: string;
@@ -75,6 +75,27 @@ export default function Home() {
   const [result, setResult] = useState<FullJob | null>(null);
   const [enrichStats, setEnrichStats] = useState<EnrichStats | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Deep-link support: `?job=<uuid>` loads an existing job's state on mount.
+  // Useful when the in-flight enrich fetch was cancelled (e.g. dev HMR
+  // re-mount during a long sweep) so the user doesn't have to re-upload.
+  useEffect(() => {
+    const jobId = new URLSearchParams(window.location.search).get('job');
+    if (!jobId) return;
+    setPhase('uploading');
+    fetch(`/api/jobs/${jobId}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`Job ${jobId} not found (HTTP ${r.status})`);
+        const data = (await r.json()) as FullJob;
+        setResult(data);
+        setEnrichStats(computeStatsFromJob(data));
+        setPhase('done');
+      })
+      .catch((e) => {
+        setError(String(e));
+        setPhase('failed');
+      });
+  }, []);
 
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
     const incoming = e.target.files ? Array.from(e.target.files) : [];
@@ -547,6 +568,29 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 function Note({ children }: { children: React.ReactNode }) {
   return <p className="text-zinc-500 italic p-3 bg-zinc-50 rounded">{children}</p>;
+}
+
+/** Compute enrich-stats from a hydrated FullJob (for the deep-link path). */
+function computeStatsFromJob(data: FullJob): EnrichStats {
+  const byCompliance: Record<string, number> = {};
+  let enriched = 0;
+  let total = 0;
+  let verified = 0;
+  for (const r of data.requirements) {
+    if (r.suggestedCompliance) {
+      enriched++;
+      byCompliance[r.suggestedCompliance] =
+        (byCompliance[r.suggestedCompliance] ?? 0) + 1;
+    }
+    total += r.evidence.length;
+    verified += r.evidence.filter((e) => e.verified).length;
+  }
+  return {
+    enriched,
+    failed: data.requirements.length - enriched,
+    byCompliance,
+    citations: { total, verified },
+  };
 }
 
 function humanSize(bytes: number): string {
