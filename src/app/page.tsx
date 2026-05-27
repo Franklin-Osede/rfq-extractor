@@ -77,7 +77,28 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
 
   function onPick(e: React.ChangeEvent<HTMLInputElement>) {
-    setFiles(e.target.files ? Array.from(e.target.files) : []);
+    const incoming = e.target.files ? Array.from(e.target.files) : [];
+    // Accumulate selections across multiple clicks; dedupe by name+size.
+    setFiles((prev) => {
+      const map = new Map<string, File>();
+      for (const f of prev) map.set(`${f.name}:${f.size}`, f);
+      for (const f of incoming) map.set(`${f.name}:${f.size}`, f);
+      return Array.from(map.values());
+    });
+    // Reset the native input so picking the same file again still fires onChange.
+    e.target.value = '';
+    setResult(null);
+    setEnrichStats(null);
+    setError(null);
+    setPhase('idle');
+  }
+
+  function removeFile(index: number) {
+    setFiles((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function clearFiles() {
+    setFiles([]);
     setResult(null);
     setEnrichStats(null);
     setError(null);
@@ -102,7 +123,15 @@ export default function Home() {
       // Show the parsed-but-not-enriched state immediately so the user sees
       // progress while the LLM sweep runs.
       const getRes1 = await fetch(`/api/jobs/${postBody.jobId}`);
-      setResult(await getRes1.json());
+      const initialState = (await getRes1.json()) as FullJob;
+      setResult(initialState);
+
+      // If no TCM was in the upload, requirements is empty — skip the LLM
+      // sweep entirely (no point enriching nothing, no banner-red error).
+      if (initialState.requirements.length === 0) {
+        setPhase('done');
+        return;
+      }
 
       // Fire enrichment (no progress events — we just wait, then re-fetch).
       setPhase('enriching');
@@ -145,10 +174,44 @@ export default function Home() {
             onChange={onPick}
             className="block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-black file:text-white hover:file:bg-zinc-800 cursor-pointer"
           />
+          <p className="mt-2 text-[11px] text-zinc-500">
+            Tip: pick files in multiple clicks to add more. Use the × next to a
+            row to remove a single file.
+          </p>
           {files.length > 0 && (
-            <div className="mt-3 text-zinc-600 text-xs">
-              {files.length} file{files.length === 1 ? '' : 's'} selected:{' '}
-              {files.map((f) => f.name).join(', ')}
+            <div className="mt-3">
+              <div className="flex items-center justify-between mb-2 text-xs">
+                <span className="text-zinc-600">
+                  {files.length} file{files.length === 1 ? '' : 's'} selected
+                </span>
+                <button
+                  onClick={clearFiles}
+                  className="text-zinc-500 hover:text-zinc-900 underline"
+                >
+                  clear all
+                </button>
+              </div>
+              <ul className="space-y-1 text-xs">
+                {files.map((f, i) => (
+                  <li
+                    key={`${f.name}:${f.size}`}
+                    className="flex items-center justify-between bg-zinc-50 rounded px-2 py-1"
+                  >
+                    <span className="text-zinc-700 truncate mr-3">
+                      {f.name}{' '}
+                      <span className="text-zinc-400">({humanSize(f.size)})</span>
+                    </span>
+                    <button
+                      onClick={() => removeFile(i)}
+                      className="text-red-600 hover:text-red-800 text-base leading-none px-1"
+                      aria-label={`Remove ${f.name}`}
+                      title="Remove"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
         </div>
@@ -163,6 +226,14 @@ export default function Home() {
               ? `Enriching ${result?.requirements.length ?? 0} requirements with LLM…`
               : 'Upload & process'}
         </button>
+        {phase === 'done' && result && result.requirements.length === 0 && (
+          <p className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-blue-900 text-xs">
+            ℹ Upload successful, but no TCM template was detected in this
+            batch. To run compliance enrichment, include the file
+            <code className="mx-1 px-1 bg-blue-100 rounded">HEL-AZ2-TCM-Template_RFQ-CV-0412.xlsx</code>
+            in the upload. You can add it now and re-process.
+          </p>
+        )}
         {error && (
           <pre className="mt-3 p-3 bg-red-50 border border-red-200 rounded text-red-900 overflow-auto whitespace-pre-wrap">
             {error}
