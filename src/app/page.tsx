@@ -17,6 +17,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import {
   clearRecentJobs,
+  labelForJob,
   loadRecentJobs,
   removeRecentJob,
   saveRecentJob,
@@ -342,12 +343,11 @@ export default function Home() {
             ? 'Done'
             : null;
 
-  // Adaptive layout: when there's no work in flight and nothing to
-  // show, render a centred single-column "landing" with the upload as
-  // hero. Once a job exists (uploading / enriching / done / failed),
-  // switch to the two-column sidebar layout that's useful for
-  // navigating between runs.
-  const showSidebar = phase !== 'idle' || result !== null;
+  // Single-column layout for the whole app. Upload is hero when there's
+  // nothing on-screen yet; compact once results exist. Earlier iterations
+  // used a 2-col sidebar but the result tables are wide and the sidebar
+  // ended ~600px before the results did, leaving asymmetric dead space.
+  const heroUpload = phase === 'idle' && !result;
 
   return (
     <main className="max-w-[1400px] mx-auto p-6 font-mono text-sm">
@@ -369,87 +369,57 @@ export default function Home() {
         )}
       </header>
 
-      {showSidebar ? (
-        // ─── Active layout: sidebar (upload + recent jobs) + results ───
-        <div className="grid grid-cols-12 gap-6">
-          <div className="col-span-12 lg:col-span-4 space-y-4">
-            <UploadSection
-              files={files}
-              phase={phase}
-              hero={false}
-              onPick={onPick}
-              onUpload={onUpload}
-              onClearFiles={clearFiles}
-              onRemoveFile={removeFile}
-              noTcmHint={
-                phase === 'done' && result?.requirements.length === 0
-              }
-              error={error}
-            />
-            <RecentJobsPanel
-              jobs={recentJobs}
-              onRemove={(id) => setRecentJobs(removeRecentJob(id))}
-              onClear={() => setRecentJobs(clearRecentJobs())}
-            />
-          </div>
+      {/* ─── Single column ─── */}
+      <div className={heroUpload ? 'max-w-3xl mx-auto space-y-6' : 'space-y-6'}>
+        <UploadSection
+          files={files}
+          phase={phase}
+          hero={heroUpload}
+          onPick={onPick}
+          onUpload={onUpload}
+          onClearFiles={clearFiles}
+          onRemoveFile={removeFile}
+          noTcmHint={phase === 'done' && result?.requirements.length === 0}
+          error={error}
+        />
 
-          <div className="col-span-12 lg:col-span-8 space-y-4">
-            {phase === 'done' && result && (
-              <NoCorpusWarning data={result} stats={enrichStats} />
+        <RecentJobsPanel
+          jobs={recentJobs}
+          currentJobId={result?.job.id ?? null}
+          onRemove={(id) => setRecentJobs(removeRecentJob(id))}
+          onClear={() => setRecentJobs(clearRecentJobs())}
+        />
+
+        {phase === 'done' && result && (
+          <NoCorpusWarning data={result} stats={enrichStats} />
+        )}
+        {phase === 'done' && riskStats && riskStats.failed > 0 && (
+          <PartialRiskWarning stats={riskStats} />
+        )}
+        {phase === 'done' &&
+          result &&
+          result.risks &&
+          result.risks.length > 0 && <RiskPanel risks={result.risks} />}
+        {enrichStats && phase === 'done' && (
+          <EnrichSummary stats={enrichStats} riskStats={riskStats} />
+        )}
+        {phase === 'done' && result && result.requirements.length > 0 && (
+          <ExportBar
+            jobId={result.job.id}
+            hasDeviations={result.requirements.some(
+              (r) => r.reviewStatus === 'deviation',
             )}
-            {phase === 'done' && riskStats && riskStats.failed > 0 && (
-              <PartialRiskWarning stats={riskStats} />
-            )}
-            {phase === 'done' &&
-              result &&
-              result.risks &&
-              result.risks.length > 0 && <RiskPanel risks={result.risks} />}
-            {enrichStats && phase === 'done' && (
-              <EnrichSummary stats={enrichStats} riskStats={riskStats} />
-            )}
-            {phase === 'done' &&
-              result &&
-              result.requirements.length > 0 && (
-                <ExportBar
-                  jobId={result.job.id}
-                  hasDeviations={result.requirements.some(
-                    (r) => r.reviewStatus === 'deviation',
-                  )}
-                />
-              )}
-            {result && (
-              <ResultView
-                data={result}
-                phase={phase}
-                onRowUpdated={handleRequirementUpdated}
-              />
-            )}
-          </div>
-        </div>
-      ) : (
-        // ─── Idle layout: hero upload, recent jobs + info cards below ───
-        <div className="max-w-3xl mx-auto space-y-8">
-          <UploadSection
-            files={files}
-            phase={phase}
-            hero={true}
-            onPick={onPick}
-            onUpload={onUpload}
-            onClearFiles={clearFiles}
-            onRemoveFile={removeFile}
-            noTcmHint={false}
-            error={error}
           />
-          {recentJobs.length > 0 && (
-            <RecentJobsPanel
-              jobs={recentJobs}
-              onRemove={(id) => setRecentJobs(removeRecentJob(id))}
-              onClear={() => setRecentJobs(clearRecentJobs())}
-            />
-          )}
-          <IdleWelcome />
-        </div>
-      )}
+        )}
+        {result && (
+          <ResultView
+            data={result}
+            phase={phase}
+            onRowUpdated={handleRequirementUpdated}
+          />
+        )}
+        {heroUpload && <IdleWelcome />}
+      </div>
     </main>
   );
 }
@@ -760,27 +730,20 @@ function RecentJobsPanel({
   jobs,
   onRemove,
   onClear,
+  currentJobId,
 }: {
   jobs: RecentJob[];
   onRemove: (jobId: string) => void;
   onClear: () => void;
+  currentJobId?: string | null;
 }) {
-  if (jobs.length === 0) {
-    return (
-      <aside className="rounded border border-zinc-200 bg-zinc-50/40 p-3 text-xs">
-        <div className="font-semibold text-zinc-700 mb-1">Recent jobs</div>
-        <p className="text-zinc-500">
-          Your uploads will appear here for one-click resume.
-        </p>
-      </aside>
-    );
-  }
+  if (jobs.length === 0) return null;
   return (
-    <aside className="rounded border border-zinc-200 bg-zinc-50/40 p-3 text-xs">
-      <div className="flex items-center justify-between mb-2">
-        <div className="font-semibold text-zinc-700">
+    <section className="rounded-lg border border-zinc-200 bg-white">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-100">
+        <h2 className="text-xs font-semibold text-zinc-700 uppercase tracking-wide">
           Recent jobs ({jobs.length})
-        </div>
+        </h2>
         <button
           onClick={onClear}
           className="text-[10px] text-zinc-500 hover:text-zinc-900 underline"
@@ -789,63 +752,78 @@ function RecentJobsPanel({
           clear all
         </button>
       </div>
-      <ul className="space-y-1.5">
-        {jobs.map((j) => (
-          <li
-            key={j.jobId}
-            className="rounded border border-zinc-200 bg-white px-2 py-1.5 hover:border-zinc-300"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <a
-                href={`/?job=${j.jobId}`}
-                className="font-mono text-[11px] text-zinc-800 hover:underline truncate"
-                title={j.jobId}
-              >
-                {j.jobId.slice(0, 8)}…
-              </a>
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  onClick={() => {
-                    void navigator.clipboard.writeText(
-                      `${window.location.origin}/?job=${j.jobId}`,
-                    );
-                  }}
-                  className="text-[10px] text-zinc-500 hover:text-zinc-900"
-                  title="Copy deep-link to clipboard"
+      <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 p-3">
+        {jobs.map((j) => {
+          const isCurrent = j.jobId === currentJobId;
+          return (
+            <li
+              key={j.jobId}
+              className={`rounded border px-2.5 py-2 transition-colors ${
+                isCurrent
+                  ? 'border-emerald-400 bg-emerald-50/40'
+                  : 'border-zinc-200 bg-zinc-50/30 hover:border-zinc-300'
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <a
+                  href={`/?job=${j.jobId}`}
+                  className="text-[11px] font-medium text-zinc-800 hover:underline truncate"
+                  title={j.jobId}
                 >
-                  copy
-                </button>
-                <button
-                  onClick={() => onRemove(j.jobId)}
-                  className="text-red-600 hover:text-red-800 text-sm leading-none"
-                  aria-label={`Remove ${j.jobId}`}
-                  title="Remove from this list"
-                >
-                  ×
-                </button>
+                  {labelForJob(j)}
+                  {isCurrent && (
+                    <span className="ml-1.5 text-[9px] text-emerald-700 uppercase">
+                      open
+                    </span>
+                  )}
+                </a>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={() => {
+                      void navigator.clipboard.writeText(
+                        `${window.location.origin}/?job=${j.jobId}`,
+                      );
+                    }}
+                    className="text-[10px] text-zinc-500 hover:text-zinc-900"
+                    title="Copy deep-link to clipboard"
+                  >
+                    copy
+                  </button>
+                  <button
+                    onClick={() => onRemove(j.jobId)}
+                    className="text-red-600 hover:text-red-800 text-sm leading-none"
+                    aria-label={`Remove ${j.jobId}`}
+                    title="Remove from this list"
+                  >
+                    ×
+                  </button>
+                </div>
               </div>
-            </div>
-            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500">
-              <span>
-                R: <strong className="text-zinc-700">{j.reqCount}</strong>
-              </span>
-              <span>
-                T: <strong className="text-zinc-700">{j.tagCount}</strong>
-              </span>
-              <span>
-                Risks: <strong className="text-zinc-700">{j.riskCount}</strong>
-              </span>
-              {j.failedCount > 0 && (
-                <span className="text-amber-700">
-                  ⚠ {j.failedCount} failed
+              <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10px] text-zinc-500">
+                <span>
+                  R: <strong className="text-zinc-700">{j.reqCount}</strong>
                 </span>
-              )}
-              <span className="text-zinc-400">{relativeTime(j.savedAt)}</span>
-            </div>
-          </li>
-        ))}
+                <span>
+                  T: <strong className="text-zinc-700">{j.tagCount}</strong>
+                </span>
+                <span>
+                  Risks:{' '}
+                  <strong className="text-zinc-700">{j.riskCount}</strong>
+                </span>
+                {j.failedCount > 0 && (
+                  <span className="text-amber-700">
+                    ⚠ {j.failedCount}
+                  </span>
+                )}
+                <span className="text-zinc-400 ml-auto">
+                  {relativeTime(j.savedAt)}
+                </span>
+              </div>
+            </li>
+          );
+        })}
       </ul>
-    </aside>
+    </section>
   );
 }
 
@@ -854,6 +832,7 @@ function relativeTime(iso: string): string {
   if (!Number.isFinite(then)) return iso;
   const delta = Math.max(0, Date.now() - then);
   const s = Math.round(delta / 1000);
+  if (s < 5) return 'just now';
   if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);
   if (m < 60) return `${m}m ago`;

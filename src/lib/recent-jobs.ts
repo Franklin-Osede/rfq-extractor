@@ -26,6 +26,26 @@ export type RecentJob = {
   status: string;
 };
 
+/**
+ * Human label for a job. UUIDs are unfriendly to scan, so we derive a
+ * short readable string from the savedAt timestamp ("Run · 5:23 PM").
+ * The label is for display only; the jobId remains the source of truth
+ * when actually opening a job.
+ */
+export function labelForJob(job: RecentJob): string {
+  const d = new Date(job.savedAt);
+  if (!Number.isFinite(d.getTime())) return `Run · ${job.jobId.slice(0, 8)}`;
+  const time = d.toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  const date = d.toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+  });
+  return `Run · ${time} · ${date}`;
+}
+
 export function loadRecentJobs(): RecentJob[] {
   if (typeof window === 'undefined') return [];
   try {
