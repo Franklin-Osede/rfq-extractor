@@ -328,6 +328,9 @@ export default function Home() {
     }
   }
 
+  // Status bar only renders when the page has something meaningful to
+  // report (a job in flight, or completed, or failed). In pure idle we
+  // hide it entirely — "Idle" as a status is visual noise.
   const phaseLabel =
     phase === 'uploading'
       ? 'Uploading + parsing…'
@@ -337,7 +340,14 @@ export default function Home() {
           ? 'Failed'
           : phase === 'done'
             ? 'Done'
-            : 'Idle';
+            : null;
+
+  // Adaptive layout: when there's no work in flight and nothing to
+  // show, render a centred single-column "landing" with the upload as
+  // hero. Once a job exists (uploading / enriching / done / failed),
+  // switch to the two-column sidebar layout that's useful for
+  // navigating between runs.
+  const showSidebar = phase !== 'idle' || result !== null;
 
   return (
     <main className="max-w-[1400px] mx-auto p-6 font-mono text-sm">
@@ -349,142 +359,224 @@ export default function Home() {
             suggestions and cross-document risk signals.
           </p>
         </div>
-        <StatusBar phase={phase} phaseLabel={phaseLabel} stats={enrichStats} riskStats={riskStats} />
+        {phaseLabel && (
+          <StatusBar
+            phase={phase}
+            phaseLabel={phaseLabel}
+            stats={enrichStats}
+            riskStats={riskStats}
+          />
+        )}
       </header>
 
-      <div className="grid grid-cols-12 gap-6">
-        {/* ─── Left column: upload + recent jobs ─── */}
-        <div className="col-span-12 lg:col-span-4 space-y-4">
-          <section>
-            <div className="border-2 border-dashed border-zinc-300 rounded p-4">
-              <input
-                type="file"
-                multiple
-                onChange={onPick}
-                className="block w-full text-xs file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-black file:text-white hover:file:bg-zinc-800 cursor-pointer"
-              />
-              <p className="mt-2 text-[10px] text-zinc-500">
-                Pick files across multiple clicks; × to remove one.
-              </p>
-              {files.length > 0 && (
-                <div className="mt-2">
-                  <div className="flex items-center justify-between mb-1 text-[11px]">
-                    <span className="text-zinc-600">
-                      {files.length} file{files.length === 1 ? '' : 's'}
-                    </span>
-                    <button
-                      onClick={clearFiles}
-                      className="text-zinc-500 hover:text-zinc-900 underline"
-                    >
-                      clear all
-                    </button>
-                  </div>
-                  <ul className="space-y-0.5 text-[11px]">
-                    {files.map((f, i) => (
-                      <li
-                        key={`${f.name}:${f.size}`}
-                        className="flex items-center justify-between bg-zinc-50 rounded px-2 py-0.5"
-                      >
-                        <span className="text-zinc-700 truncate mr-2">
-                          {f.name}{' '}
-                          <span className="text-zinc-400">
-                            ({humanSize(f.size)})
-                          </span>
-                        </span>
-                        <button
-                          onClick={() => removeFile(i)}
-                          className="text-red-600 hover:text-red-800 text-sm leading-none px-0.5"
-                          aria-label={`Remove ${f.name}`}
-                          title="Remove"
-                        >
-                          ×
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-            <button
-              onClick={onUpload}
-              disabled={
-                phase === 'uploading' || phase === 'enriching' || files.length === 0
-              }
-              className="mt-3 w-full px-3 py-2 rounded bg-black text-white disabled:bg-zinc-400 text-xs"
-            >
-              {phase === 'uploading'
-                ? 'Uploading…'
-                : phase === 'enriching'
-                  ? 'Enriching…'
-                  : 'Upload & process'}
-            </button>
-            {phase === 'done' && result && result.requirements.length === 0 && (
-              <p className="mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-blue-900 text-[11px]">
-                ℹ No TCM template detected. Include
-                <code className="mx-1 px-1 bg-blue-100 rounded">HEL-AZ2-TCM-Template_RFQ-CV-0412.xlsx</code>
-                in the upload to enable enrichment.
-              </p>
-            )}
-            {error && (
-              <pre className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-red-900 overflow-auto whitespace-pre-wrap text-[11px]">
-                {error}
-              </pre>
-            )}
-          </section>
-
-          <RecentJobsPanel
-            jobs={recentJobs}
-            onRemove={(id) => setRecentJobs(removeRecentJob(id))}
-            onClear={() => setRecentJobs(clearRecentJobs())}
-          />
-        </div>
-
-        {/* ─── Right column: results ─── */}
-        <div className="col-span-12 lg:col-span-8 space-y-4">
-          {phase === 'done' && result && (
-            <NoCorpusWarning data={result} stats={enrichStats} />
-          )}
-
-          {phase === 'done' && riskStats && riskStats.failed > 0 && (
-            <PartialRiskWarning stats={riskStats} />
-          )}
-
-          {phase === 'done' &&
-            result &&
-            result.risks &&
-            result.risks.length > 0 && <RiskPanel risks={result.risks} />}
-
-          {enrichStats && phase === 'done' && (
-            <EnrichSummary stats={enrichStats} riskStats={riskStats} />
-          )}
-
-          {phase === 'done' &&
-            result &&
-            result.requirements.length > 0 && (
-              <ExportBar
-                jobId={result.job.id}
-                hasDeviations={result.requirements.some(
-                  (r) => r.reviewStatus === 'deviation',
-                )}
-              />
-            )}
-
-          {result && (
-            <ResultView
-              data={result}
+      {showSidebar ? (
+        // ─── Active layout: sidebar (upload + recent jobs) + results ───
+        <div className="grid grid-cols-12 gap-6">
+          <div className="col-span-12 lg:col-span-4 space-y-4">
+            <UploadSection
+              files={files}
               phase={phase}
-              onRowUpdated={handleRequirementUpdated}
+              hero={false}
+              onPick={onPick}
+              onUpload={onUpload}
+              onClearFiles={clearFiles}
+              onRemoveFile={removeFile}
+              noTcmHint={
+                phase === 'done' && result?.requirements.length === 0
+              }
+              error={error}
+            />
+            <RecentJobsPanel
+              jobs={recentJobs}
+              onRemove={(id) => setRecentJobs(removeRecentJob(id))}
+              onClear={() => setRecentJobs(clearRecentJobs())}
+            />
+          </div>
+
+          <div className="col-span-12 lg:col-span-8 space-y-4">
+            {phase === 'done' && result && (
+              <NoCorpusWarning data={result} stats={enrichStats} />
+            )}
+            {phase === 'done' && riskStats && riskStats.failed > 0 && (
+              <PartialRiskWarning stats={riskStats} />
+            )}
+            {phase === 'done' &&
+              result &&
+              result.risks &&
+              result.risks.length > 0 && <RiskPanel risks={result.risks} />}
+            {enrichStats && phase === 'done' && (
+              <EnrichSummary stats={enrichStats} riskStats={riskStats} />
+            )}
+            {phase === 'done' &&
+              result &&
+              result.requirements.length > 0 && (
+                <ExportBar
+                  jobId={result.job.id}
+                  hasDeviations={result.requirements.some(
+                    (r) => r.reviewStatus === 'deviation',
+                  )}
+                />
+              )}
+            {result && (
+              <ResultView
+                data={result}
+                phase={phase}
+                onRowUpdated={handleRequirementUpdated}
+              />
+            )}
+          </div>
+        </div>
+      ) : (
+        // ─── Idle layout: hero upload, recent jobs + info cards below ───
+        <div className="max-w-3xl mx-auto space-y-8">
+          <UploadSection
+            files={files}
+            phase={phase}
+            hero={true}
+            onPick={onPick}
+            onUpload={onUpload}
+            onClearFiles={clearFiles}
+            onRemoveFile={removeFile}
+            noTcmHint={false}
+            error={error}
+          />
+          {recentJobs.length > 0 && (
+            <RecentJobsPanel
+              jobs={recentJobs}
+              onRemove={(id) => setRecentJobs(removeRecentJob(id))}
+              onClear={() => setRecentJobs(clearRecentJobs())}
             />
           )}
-
-          {phase === 'idle' && !result && <IdleWelcome />}
+          <IdleWelcome />
         </div>
-      </div>
+      )}
     </main>
   );
 }
 
 // ─── Components ──────────────────────────────────────────────────────────────
+
+/**
+ * Upload zone — same logic in both layouts, two visual variants:
+ *   - `hero=true` (idle): big centered drop area, bigger button.
+ *   - `hero=false` (sidebar): compact panel.
+ */
+function UploadSection({
+  files,
+  phase,
+  hero,
+  onPick,
+  onUpload,
+  onClearFiles,
+  onRemoveFile,
+  noTcmHint,
+  error,
+}: {
+  files: File[];
+  phase: Phase;
+  hero: boolean;
+  onPick: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onUpload: () => void;
+  onClearFiles: () => void;
+  onRemoveFile: (i: number) => void;
+  noTcmHint: boolean;
+  error: string | null;
+}) {
+  const dropPadding = hero ? 'p-10' : 'p-4';
+  const inputText = hero ? 'text-sm' : 'text-xs';
+  const buttonText = hero ? 'text-sm py-3' : 'text-xs py-2';
+  const fileItemText = hero ? 'text-xs' : 'text-[11px]';
+  return (
+    <section>
+      {hero && (
+        <div className="mb-4 text-center">
+          <h2 className="text-base font-semibold text-zinc-800">
+            Drop the Helios RFQ package
+          </h2>
+          <p className="text-xs text-zinc-500 mt-1">
+            13 binding documents + 1 noise PDF, processed in ~120 seconds.
+          </p>
+        </div>
+      )}
+      <div
+        className={`border-2 border-dashed border-zinc-300 rounded ${dropPadding} bg-white`}
+      >
+        <input
+          type="file"
+          multiple
+          onChange={onPick}
+          className={`block w-full ${inputText} file:mr-3 file:py-2 file:px-4 file:rounded file:border-0 file:bg-black file:text-white hover:file:bg-zinc-800 cursor-pointer`}
+        />
+        <p className={`mt-2 ${hero ? 'text-xs' : 'text-[10px]'} text-zinc-500`}>
+          Pick files across multiple clicks; × to remove one.
+        </p>
+        {files.length > 0 && (
+          <div className="mt-3">
+            <div className={`flex items-center justify-between mb-1 ${fileItemText}`}>
+              <span className="text-zinc-600">
+                {files.length} file{files.length === 1 ? '' : 's'} selected
+              </span>
+              <button
+                onClick={onClearFiles}
+                className="text-zinc-500 hover:text-zinc-900 underline"
+              >
+                clear all
+              </button>
+            </div>
+            <ul className={`space-y-0.5 ${fileItemText}`}>
+              {files.map((f, i) => (
+                <li
+                  key={`${f.name}:${f.size}`}
+                  className="flex items-center justify-between bg-zinc-50 rounded px-2 py-0.5"
+                >
+                  <span className="text-zinc-700 truncate mr-2">
+                    {f.name}{' '}
+                    <span className="text-zinc-400">({humanSize(f.size)})</span>
+                  </span>
+                  <button
+                    onClick={() => onRemoveFile(i)}
+                    className="text-red-600 hover:text-red-800 text-sm leading-none px-0.5"
+                    aria-label={`Remove ${f.name}`}
+                    title="Remove"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+      <button
+        onClick={onUpload}
+        disabled={
+          phase === 'uploading' || phase === 'enriching' || files.length === 0
+        }
+        className={`mt-3 w-full px-4 rounded bg-black text-white disabled:bg-zinc-400 ${buttonText}`}
+      >
+        {phase === 'uploading'
+          ? 'Uploading…'
+          : phase === 'enriching'
+            ? 'Enriching…'
+            : 'Upload & process'}
+      </button>
+      {noTcmHint && (
+        <p className="mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-blue-900 text-[11px]">
+          ℹ No TCM template detected. Include
+          <code className="mx-1 px-1 bg-blue-100 rounded">
+            HEL-AZ2-TCM-Template_RFQ-CV-0412.xlsx
+          </code>
+          in the upload to enable enrichment.
+        </p>
+      )}
+      {error && (
+        <pre className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-red-900 overflow-auto whitespace-pre-wrap text-[11px]">
+          {error}
+        </pre>
+      )}
+    </section>
+  );
+}
 
 /**
  * Idle-state right column. Replaces the empty wireframe with information
