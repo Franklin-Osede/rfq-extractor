@@ -27,6 +27,7 @@ import { callStructured } from './llm';
 import type { Chunk } from './retrieval';
 import { retrieveChunks } from './retrieval';
 import type { Citation, RiskSeverity, RiskSignal } from './types';
+import { validateSnippet } from './validate';
 
 const SYSTEM_PROMPT = `You are a senior proposal engineer cross-checking valve tag service descriptions between two binding documents:
 - TCM (Technical Compliance Matrix) — the vendor response template, Tag-Level Confirmation sheet.
@@ -125,22 +126,37 @@ Extract the IDS service description for this tag and decide whether it materiall
     maxTokens: 400,
   });
 
-  // Build citations from the candidate chunks. We trust the chunk metadata
-  // (docId/page) more than the LLM here — the validator step is mainly to
-  // confirm the IDS description appears in one of these chunks.
-  const citations: Citation[] = candidates.map((c) => ({
-    docId: c.docId,
-    page: c.page,
-    snippet: result.idsServiceDescription.slice(0, 300),
-    verified: result.idsServiceDescription.length > 0,
-  }));
+  // Per-chunk citation verification. The LLM hands us one IDS service
+  // description extracted from somewhere in the candidate chunks. We must
+  // not blindly attach that snippet to every chunk — only the ones where
+  // the snippet actually appears (literal / normalized / fuzzy ≥ 0.9 per
+  // validateSnippet). Chunks that don't match are dropped from the
+  // citation set entirely; if no chunk validates, the risk signal cannot
+  // be grounded and we downgrade.
+  const snippet = result.idsServiceDescription.slice(0, 300);
+  const citations: Citation[] = [];
+  for (const c of candidates) {
+    if (!snippet) break;
+    const v = validateSnippet(snippet, c.text);
+    if (v.verified) {
+      citations.push({ docId: c.docId, page: c.page, snippet, verified: true });
+    }
+  }
+
+  const groundedSeverity: 'none' | RiskSeverity =
+    citations.length === 0 && result.severity !== 'none'
+      ? 'none' // can't ground the IDS side → don't surface as a confirmed risk
+      : result.severity;
 
   return {
     tagNo: input.tagNo,
     idsServiceDescription: result.idsServiceDescription,
-    hasMismatch: result.hasMismatch,
-    severity: result.severity,
-    reason: result.reason,
+    hasMismatch: result.hasMismatch && citations.length > 0,
+    severity: groundedSeverity,
+    reason:
+      citations.length === 0 && result.hasMismatch
+        ? `${result.reason} [unverified — no IDS chunk contained the extracted description]`
+        : result.reason,
     citations,
   };
 }

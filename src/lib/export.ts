@@ -35,6 +35,7 @@ export type ExportableRequirement = {
   vendorCompliance: string | null;
   vendorComment: string | null;
   deviationRef: string | null;
+  reviewStatus: string;
 };
 
 /** Shape of a deviation row going into the DEV Register. */
@@ -80,23 +81,39 @@ export async function exportFilledTcm(
     const req = byReqId.get(reqId);
     if (!req) return;
 
-    // Resolve effective compliance: vendor's choice wins, fall back to LLM.
-    const effective = req.vendorCompliance ?? req.suggestedCompliance ?? null;
+    // Rejected = the human explicitly disagreed with the LLM suggestion.
+    // Treat it like Review at write-time: never leak the LLM's answer into
+    // col D, flag the row in col F so the engineer notices on read-back.
+    const isRejected = req.reviewStatus === 'rejected';
+
+    // Resolve effective compliance: vendor's choice wins, fall back to LLM —
+    // but only when the row hasn't been rejected.
+    const effective = isRejected
+      ? null
+      : (req.vendorCompliance ?? req.suggestedCompliance ?? null);
     const isReview = effective === 'Review';
 
-    // Column D — Compliance (C / D / N/A). We never write Review here.
+    // Column D — Compliance (C / D / N/A). We never write Review or rejected here.
     if (effective && !isReview) {
       row.getCell(4).value = effective;
     }
     // Column E — Deviation Ref (Att. J). Only filled when the row is a deviation.
-    if (req.deviationRef) {
+    if (req.deviationRef && !isRejected) {
       row.getCell(5).value = req.deviationRef;
     }
-    // Column F — Vendor Comment.
+    // Column F — Vendor Comment. Three regimes:
+    //   rejected → explicit flag, drop the LLM comment entirely.
+    //   review   → flag + keep the LLM comment as a starting point.
+    //   normal   → vendor comment or LLM-suggested comment.
     const comment = req.vendorComment ?? req.suggestedComment ?? '';
-    const finalComment = isReview
-      ? `[NEEDS VENDOR REVIEW — no grounded evidence suggested]${comment ? ' · ' + comment : ''}`
-      : comment;
+    let finalComment: string;
+    if (isRejected) {
+      finalComment = '[NEEDS VENDOR REVIEW — vendor rejected the AI suggestion]';
+    } else if (isReview) {
+      finalComment = `[NEEDS VENDOR REVIEW — no grounded evidence suggested]${comment ? ' · ' + comment : ''}`;
+    } else {
+      finalComment = comment;
+    }
     if (finalComment) row.getCell(6).value = finalComment;
   });
 
@@ -204,6 +221,15 @@ export async function exportDevRegister(
     // 7, 8 left blank for vendor proposal engineer.
     targetRow.getCell(9).value = 'Deviation';
     // 10 left blank for Helios.
+  }
+
+  // Step 3 — clear any remaining pre-numbered slot rows we didn't use.
+  // The template ships with empty DEV-NNN placeholder rows after the last
+  // example; leaving them in the submission file is visual noise that hints
+  // at "more deviations expected" when there aren't.
+  for (let i = nextSlotIdx; i < slotRows.length; i++) {
+    const row = sheet.getRow(slotRows[i]);
+    for (let c = 1; c <= 10; c++) row.getCell(c).value = null;
   }
 
   const out = await workbook.xlsx.writeBuffer();

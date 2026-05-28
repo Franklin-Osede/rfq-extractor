@@ -70,6 +70,30 @@ export async function PATCH(
   if (parsed.deviationRef !== undefined) update.deviationRef = parsed.deviationRef;
   if (parsed.reviewStatus !== undefined) update.reviewStatus = parsed.reviewStatus;
 
+  // Mark-as-deviation must persist a stable DEV-NNN ref now, not at export
+  // time. Otherwise the filled TCM (which only writes existing refs) and the
+  // DEV Register (which auto-assigns refs on the fly) end up disagreeing on
+  // which slot the deviation lives in. If the caller did not provide a
+  // deviationRef when transitioning to 'deviation' status, allocate the next
+  // free DEV-NNN for this job here.
+  const transitioningToDeviation =
+    parsed.reviewStatus === 'deviation' &&
+    (update.deviationRef ?? existing.deviationRef) == null;
+
+  if (transitioningToDeviation) {
+    const peers = db
+      .select({ deviationRef: schema.requirements.deviationRef })
+      .from(schema.requirements)
+      .where(eq(schema.requirements.jobId, existing.jobId))
+      .all();
+    let maxN = 0;
+    for (const p of peers) {
+      const m = p.deviationRef?.match(/^DEV-(\d+)$/i);
+      if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+    }
+    update.deviationRef = `DEV-${String(maxN + 1).padStart(3, '0')}`;
+  }
+
   db.update(schema.requirements)
     .set(update)
     .where(eq(schema.requirements.id, id))

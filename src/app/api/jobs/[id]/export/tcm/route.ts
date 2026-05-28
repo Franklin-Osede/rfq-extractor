@@ -50,6 +50,7 @@ export async function GET(
       vendorCompliance: schema.requirements.vendorCompliance,
       vendorComment: schema.requirements.vendorComment,
       deviationRef: schema.requirements.deviationRef,
+      reviewStatus: schema.requirements.reviewStatus,
     })
     .from(schema.requirements)
     .where(eq(schema.requirements.jobId, jobId))

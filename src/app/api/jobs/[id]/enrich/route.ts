@@ -12,7 +12,7 @@
  * The route returns aggregate stats; the UI re-fetches the full job state.
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
 import { enrichRequirement, type EnrichInput, type EnrichOutput } from '@/lib/enrich';
@@ -52,6 +52,10 @@ export async function POST(
   }
 
   // Build the corpus from the chunks table, joined with document role.
+  // Unknown-role docs (e.g. the noise "Invoice 4.pdf" in the test package)
+  // are kept on disk for inventory but excluded from the evidence corpus —
+  // otherwise their text becomes citeable and an irrelevant document can
+  // ground a compliance suggestion. This is a hard auditability boundary.
   const allChunks = db
     .select({
       chunkId: schema.chunks.id,
@@ -62,7 +66,12 @@ export async function POST(
     })
     .from(schema.chunks)
     .innerJoin(schema.documents, eq(schema.chunks.documentId, schema.documents.id))
-    .where(eq(schema.documents.jobId, jobId))
+    .where(
+      and(
+        eq(schema.documents.jobId, jobId),
+        ne(schema.documents.role, 'unknown'),
+      ),
+    )
     .all();
 
   const corpus: Chunk[] = allChunks.map((c) => ({

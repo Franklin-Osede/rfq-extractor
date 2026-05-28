@@ -91,7 +91,16 @@ type Phase = 'idle' | 'uploading' | 'enriching' | 'done' | 'failed';
 
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
-  const [phase, setPhase] = useState<Phase>('idle');
+  // Initial phase via lazy initializer: if the URL carries ?job=<uuid> we
+  // start in 'uploading' so the first render already shows the loading
+  // state. Setting it inside the deep-link useEffect would trigger a
+  // cascading render (react-hooks/set-state-in-effect) — we avoid that.
+  const [phase, setPhase] = useState<Phase>(() => {
+    if (typeof window === 'undefined') return 'idle';
+    return new URLSearchParams(window.location.search).has('job')
+      ? 'uploading'
+      : 'idle';
+  });
   const [result, setResult] = useState<FullJob | null>(null);
   const [enrichStats, setEnrichStats] = useState<EnrichStats | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +111,6 @@ export default function Home() {
   useEffect(() => {
     const jobId = new URLSearchParams(window.location.search).get('job');
     if (!jobId) return;
-    setPhase('uploading');
     fetch(`/api/jobs/${jobId}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`Job ${jobId} not found (HTTP ${r.status})`);
