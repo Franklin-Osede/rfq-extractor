@@ -79,10 +79,30 @@ export async function POST(req: NextRequest) {
 
   for (const file of files) {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const filePath = path.join(jobDir, file.name);
+
+    // Path traversal hardening: an attacker-controlled filename like
+    // "../../../etc/foo" would, under naive path.join, escape jobDir
+    // and let the upload write anywhere the process can write. Force
+    // basename + a containment check; reject anything that doesn't end
+    // up *strictly* inside jobDir.
+    const safeName = path.basename(file.name);
+    if (!safeName || safeName === '.' || safeName === '..') {
+      return NextResponse.json(
+        { error: `Refused upload — illegal filename: ${JSON.stringify(file.name)}` },
+        { status: 400 },
+      );
+    }
+    const filePath = path.resolve(jobDir, safeName);
+    const rel = path.relative(jobDir, filePath);
+    if (rel.startsWith('..') || path.isAbsolute(rel) || rel === '') {
+      return NextResponse.json(
+        { error: `Refused upload — filename resolves outside jobDir: ${JSON.stringify(file.name)}` },
+        { status: 400 },
+      );
+    }
     await writeFile(filePath, buffer);
 
-    const role = classifyByFilename(file.name);
+    const role = classifyByFilename(safeName);
     const mimeType = detectMimeType(buffer.subarray(0, 16));
     const scanned = detectScanned(role);
     const language = detectLanguage(role);
@@ -92,7 +112,7 @@ export async function POST(req: NextRequest) {
       .values({
         id: docId,
         jobId,
-        filename: file.name,
+        filename: safeName,
         role,
         mimeType,
         sizeBytes: buffer.length,
@@ -104,7 +124,7 @@ export async function POST(req: NextRequest) {
 
     documents.push({
       id: docId,
-      filename: file.name,
+      filename: safeName,
       role,
       mimeType,
       sizeBytes: buffer.length,
