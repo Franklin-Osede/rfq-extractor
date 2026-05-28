@@ -403,7 +403,11 @@ function RiskPanel({ risks }: { risks: RiskRow[] }) {
         {sorted.map((r) => {
           const isExpanded = expanded.has(r.id);
           const tcmSource = r.sources.find((s) => s.source === 'tcm');
-          const idsSource = r.sources.find((s) => s.source === 'ids');
+          // Everything that isn't TCM is "evidence" — render in a stacked
+          // column on the right. The scope field tells the demo viewer
+          // whether the mismatch is a service-description disagreement
+          // (IDS-driven) or a SIL allocation disagreement (SIS-driven).
+          const evidenceSources = r.sources.filter((s) => s.source !== 'tcm');
           return (
             <li key={r.id}>
               <button
@@ -412,6 +416,7 @@ function RiskPanel({ risks }: { risks: RiskRow[] }) {
               >
                 <SeverityPill severity={r.severity} />
                 <span className="font-medium text-xs w-24 shrink-0">{r.tagNo}</span>
+                <ScopeChip scope={r.scope} />
                 <span className="text-xs text-zinc-700 flex-1">{r.reason}</span>
                 <span className="text-zinc-400 text-xs">{isExpanded ? '▴' : '▾'}</span>
               </button>
@@ -430,18 +435,27 @@ function RiskPanel({ risks }: { risks: RiskRow[] }) {
                       </p>
                     )}
                   </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">
-                      IDS Attachment A
-                    </div>
-                    <blockquote className="text-zinc-800 border-l-2 border-rose-400 pl-2">
-                      &ldquo;{idsSource?.text ?? '(not located in IDS)'}&rdquo;
-                    </blockquote>
-                    {idsSource?.citation && (
-                      <p className="text-[10px] text-zinc-500 mt-1">
-                        Source: IDS page {idsSource.citation.page}
-                      </p>
+                  <div className="space-y-3">
+                    {evidenceSources.length === 0 && (
+                      <blockquote className="text-zinc-500 italic text-xs">
+                        (no evidence-side source recorded for this signal)
+                      </blockquote>
                     )}
+                    {evidenceSources.map((s, i) => (
+                      <div key={`${s.source}-${i}`}>
+                        <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1">
+                          {sourceLabel(s.source)}
+                        </div>
+                        <blockquote className="text-zinc-800 border-l-2 border-rose-400 pl-2">
+                          &ldquo;{s.text || '(not located)'}&rdquo;
+                        </blockquote>
+                        {s.citation && (
+                          <p className="text-[10px] text-zinc-500 mt-1">
+                            Source: {sourceLabel(s.source)} page {s.citation.page}
+                          </p>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
@@ -450,6 +464,37 @@ function RiskPanel({ risks }: { risks: RiskRow[] }) {
         })}
       </ul>
     </section>
+  );
+}
+
+function sourceLabel(source: string): string {
+  switch (source) {
+    case 'tcm':
+      return 'TCM Tag-Level Confirmation';
+    case 'ids':
+      return 'IDS Attachment A';
+    case 'sis_spec':
+      return 'SIS / SIL Equipment Spec';
+    case 'pid_register':
+      return 'P&ID Drawing Register';
+    case 'rfq_master':
+      return 'Master RFQ';
+    default:
+      return source;
+  }
+}
+
+function ScopeChip({ scope }: { scope: string }) {
+  const label =
+    scope === 'tag-sil-classification'
+      ? 'SIL'
+      : scope === 'tag-service-description'
+        ? 'service'
+        : scope;
+  return (
+    <span className="inline-block px-1.5 py-0.5 rounded text-[9px] border border-zinc-300 bg-white text-zinc-600 font-medium uppercase tracking-wide">
+      {label}
+    </span>
   );
 }
 

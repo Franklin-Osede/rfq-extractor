@@ -16,6 +16,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
 import type { Chunk } from '@/lib/retrieval';
 import { analyseOneTagRisk, toRiskSignal } from '@/lib/risks';
+import { analyseTagSilAllocations } from '@/lib/sis-risks';
 
 export const runtime = 'nodejs';
 export const maxDuration = 120;
@@ -84,6 +85,34 @@ export async function POST(
     .all();
   const tcmDocId = tcmDoc?.id ?? null;
 
+  // SIS chunks for the deterministic SIL cross-check (separate from the IDS
+  // LLM sweep). Loaded alongside so we run both passes within the same route.
+  const sisRows = db
+    .select({
+      chunkId: schema.chunks.id,
+      docId: schema.chunks.documentId,
+      page: schema.chunks.page,
+      text: schema.chunks.text,
+      role: schema.documents.role,
+    })
+    .from(schema.chunks)
+    .innerJoin(schema.documents, eq(schema.chunks.documentId, schema.documents.id))
+    .where(
+      and(
+        eq(schema.documents.jobId, jobId),
+        eq(schema.documents.role, 'sis_spec'),
+      ),
+    )
+    .all();
+  const sisChunks: Chunk[] = sisRows.map((r) => ({
+    chunkId: r.chunkId,
+    docId: r.docId,
+    docRole: r.role,
+    page: r.page,
+    text: r.text,
+  }));
+  const sisDocId = sisChunks[0]?.docId ?? null;
+
   // Reset previous signals for idempotency.
   db.delete(schema.riskSignals).where(eq(schema.riskSignals.jobId, jobId)).run();
 
@@ -133,6 +162,47 @@ export async function POST(
 
   await Promise.all(Array.from({ length: MAX_CONCURRENCY }, worker));
 
+  // SIS deterministic SIL allocation cross-check. Runs after the IDS LLM
+  // sweep but doesn't depend on it — different document, different scope
+  // ('tag-sil-classification' vs 'tag-service-description'). Both can fire
+  // for the same tag and that's expected: a tag could mismatch on service
+  // description AND on SIL allocation.
+  let sisStats = {
+    sisTableFound: false,
+    sisTagsAllocated: 0,
+    tagsAnalysed: 0,
+    hardMismatches: 0,
+    tcmSilent: 0,
+    aligned: 0,
+    notInSis: 0,
+  };
+  if (sisChunks.length > 0 && sisDocId) {
+    const result = analyseTagSilAllocations(
+      tags.map((t) => ({
+        tagNo: t.tagNo,
+        tcmServiceDescription: t.heliosServiceDescription,
+      })),
+      sisChunks,
+      sisDocId,
+      tcmDocId ?? '',
+    );
+    sisStats = result.stats;
+    for (const signal of result.signals) {
+      db.insert(schema.riskSignals)
+        .values({
+          id: `${jobId}:${signal.id}`,
+          jobId,
+          tagNo: signal.tagNo,
+          scope: signal.scope,
+          severity: signal.severity,
+          reason: signal.reason,
+          sources: signal.sources,
+        })
+        .run();
+      persistedSignals.push(signal.id);
+    }
+  }
+
   db.update(schema.jobs)
     .set({ status: 'completed' })
     .where(eq(schema.jobs.id, jobId))
@@ -156,5 +226,6 @@ export async function POST(
     failed: errors.length,
     errors,
     bySeverity,
+    sis: sisStats,
   });
 }

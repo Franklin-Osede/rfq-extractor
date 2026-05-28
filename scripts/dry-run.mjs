@@ -115,6 +115,14 @@ check('POST /risks returns 200', riskRes.status === 200, `${rElapsed}ms`);
 check('29 tags analysed', riskBody.tagsAnalysed === 29, `got ${riskBody.tagsAnalysed}`);
 check('0 failures', riskBody.failed === 0, `errors: ${riskBody.errors?.length ?? 0}`);
 check('at least 5 high-severity risks detected', (riskBody.bySeverity?.high ?? 0) >= 5, `${riskBody.bySeverity?.high} high`);
+// SIS deterministic SIL cross-check. The table on page 4 of HEL-GS-SIS-007
+// allocates SIL to 28 of the 29 tags (HV-3011 is not in SIS scope). Of those,
+// exactly 10 disagree with the SIL stated in the TCM Tag-Level service
+// description — these are real proposal-blocking signals.
+check('SIS table parsed', riskBody.sis?.sisTableFound === true);
+check('SIS allocated >= 28 tags', (riskBody.sis?.sisTagsAllocated ?? 0) >= 28, `got ${riskBody.sis?.sisTagsAllocated}`);
+check('SIS hard mismatches = 10', riskBody.sis?.hardMismatches === 10, `got ${riskBody.sis?.hardMismatches}`);
+check('SIS notInSis = 1 (HV-3011)', riskBody.sis?.notInSis === 1, `got ${riskBody.sis?.notInSis}`);
 
 // ─── Phase 5: GET returns full state with risks ──────────────────────────────
 
