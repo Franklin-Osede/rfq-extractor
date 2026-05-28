@@ -20,6 +20,37 @@ import OpenAI from 'openai';
 
 export type LlmProvider = 'anthropic' | 'openai';
 
+/** Per-call telemetry surfaced for cost/latency accounting. */
+export type LlmUsage = {
+  provider: LlmProvider;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+};
+
+export type LlmCallResult<T> = {
+  output: T;
+  usage: LlmUsage;
+};
+
+/**
+ * USD per 1M tokens for each model we use. Numbers are rough public-list
+ * pricing and may drift; they're only used for an estimate surfaced in the
+ * UI ("$0.10 estimated cost"), not for billing. Update when providers
+ * publish new tiers.
+ */
+const PRICING: Record<string, { in: number; out: number }> = {
+  'claude-sonnet-4-5-20250929': { in: 3.0, out: 15.0 },
+  'gpt-4o-mini': { in: 0.15, out: 0.6 },
+};
+
+export function estimateCostUsd(usage: LlmUsage): number {
+  const p = PRICING[usage.model];
+  if (!p) return 0;
+  return (usage.inputTokens * p.in + usage.outputTokens * p.out) / 1_000_000;
+}
+
 export class NoLlmProviderConfiguredError extends Error {
   constructor() {
     super(
@@ -52,12 +83,12 @@ export type StructuredCallOptions = {
 
 /**
  * Make a structured-output call to whichever provider is configured.
- * Returns the parsed JSON output, validated only against the schema's shape
- * at the provider level — caller may want to zod-parse for extra safety.
+ * Returns the parsed JSON output and per-call telemetry (tokens + latency)
+ * so callers can aggregate cost/latency without instrumenting every site.
  */
 export async function callStructured<T>(
   opts: StructuredCallOptions,
-): Promise<T> {
+): Promise<LlmCallResult<T>> {
   const provider = detectProvider();
   if (!provider) throw new NoLlmProviderConfiguredError();
 
@@ -72,11 +103,15 @@ export async function callStructured<T>(
 
 // ─── Anthropic implementation (tool-use forced) ──────────────────────────────
 
-async function callAnthropic<T>(opts: Required<StructuredCallOptions>): Promise<T> {
+async function callAnthropic<T>(
+  opts: Required<StructuredCallOptions>,
+): Promise<LlmCallResult<T>> {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  const model = 'claude-sonnet-4-5-20250929'; // Sonnet 4.5; pin Sonnet 4.6 once it's GA.
 
+  const t0 = Date.now();
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-5-20250929', // Sonnet 4.5; pin Sonnet 4.6 once it's GA.
+    model,
     max_tokens: opts.maxTokens,
     temperature: opts.temperature,
     system: opts.system,
@@ -90,21 +125,35 @@ async function callAnthropic<T>(opts: Required<StructuredCallOptions>): Promise<
     tool_choice: { type: 'tool', name: opts.schemaName },
     messages: [{ role: 'user', content: opts.user }],
   });
+  const latencyMs = Date.now() - t0;
 
   const toolUse = response.content.find((c) => c.type === 'tool_use');
   if (!toolUse || toolUse.type !== 'tool_use') {
     throw new Error('Anthropic did not return a tool_use block');
   }
-  return toolUse.input as T;
+  return {
+    output: toolUse.input as T,
+    usage: {
+      provider: 'anthropic',
+      model,
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      latencyMs,
+    },
+  };
 }
 
 // ─── OpenAI implementation (response_format json_schema) ─────────────────────
 
-async function callOpenAI<T>(opts: Required<StructuredCallOptions>): Promise<T> {
+async function callOpenAI<T>(
+  opts: Required<StructuredCallOptions>,
+): Promise<LlmCallResult<T>> {
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+  const model = 'gpt-4o-mini';
 
+  const t0 = Date.now();
   const response = await client.chat.completions.create({
-    model: 'gpt-4o-mini',
+    model,
     temperature: opts.temperature,
     max_completion_tokens: opts.maxTokens,
     response_format: {
@@ -123,13 +172,25 @@ async function callOpenAI<T>(opts: Required<StructuredCallOptions>): Promise<T> 
       { role: 'user', content: opts.user },
     ],
   });
+  const latencyMs = Date.now() - t0;
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error('OpenAI returned an empty response');
 
+  let parsed: T;
   try {
-    return JSON.parse(content) as T;
+    parsed = JSON.parse(content) as T;
   } catch {
     throw new Error('OpenAI returned non-JSON content despite json_schema mode');
   }
+  return {
+    output: parsed,
+    usage: {
+      provider: 'openai',
+      model,
+      inputTokens: response.usage?.prompt_tokens ?? 0,
+      outputTokens: response.usage?.completion_tokens ?? 0,
+      latencyMs,
+    },
+  };
 }

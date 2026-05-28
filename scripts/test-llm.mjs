@@ -16,7 +16,7 @@ if (!detectProvider()) {
   process.exit(1);
 }
 
-const result = await callStructured({
+const { output, usage } = await callStructured({
   system: 'You are a smoke-test bot. Always return the same fixed JSON shape.',
   user: 'Reply with greeting="hello" and confidence=0.99.',
   schemaName: 'smoke_test_output',
@@ -33,10 +33,15 @@ const result = await callStructured({
   maxTokens: 100,
 });
 
-console.log('Response:', JSON.stringify(result, null, 2));
+console.log('Response:', JSON.stringify(output, null, 2));
+console.log('Usage:', JSON.stringify(usage, null, 2));
 
-if (typeof result.greeting !== 'string' || typeof result.confidence !== 'number') {
+if (typeof output.greeting !== 'string' || typeof output.confidence !== 'number') {
   console.error('\n❌ Output shape unexpected.');
   process.exit(1);
 }
-console.log('\n✅ PASS — LLM layer round-trips a structured call.');
+if (!usage || typeof usage.inputTokens !== 'number' || typeof usage.latencyMs !== 'number') {
+  console.error('\n❌ Usage telemetry missing or malformed.');
+  process.exit(1);
+}
+console.log('\n✅ PASS — LLM layer round-trips a structured call with usage telemetry.');

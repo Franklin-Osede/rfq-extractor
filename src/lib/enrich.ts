@@ -16,7 +16,7 @@
  * deterministically instead of via a second LLM call (DECISIONS.md D-04).
  */
 
-import { callStructured } from './llm';
+import { callStructured, type LlmUsage } from './llm';
 import type { Chunk } from './retrieval';
 import { retrieveChunks } from './retrieval';
 import type { Citation, ComplianceStatus, RequirementDifficulty } from './types';
@@ -100,6 +100,8 @@ export type EnrichOutput = {
   rationale: string;
   suggestedComment: string;
   evidence: Citation[];
+  /** null when the LLM wasn't called (e.g. zero candidate chunks). */
+  usage: LlmUsage | null;
 };
 
 /** Enrich a single requirement. Pure function — no DB writes here. */
@@ -119,6 +121,7 @@ export async function enrichRequirement(
       rationale: 'No matching evidence in the indexed document corpus.',
       suggestedComment: '',
       evidence: [],
+      usage: null,
     };
   }
 
@@ -138,7 +141,7 @@ ${chunkContext}
 
 Decide compliance and cite VERBATIM snippets from the chunks above.`;
 
-  const llmOut = await callStructured<LlmOutput>({
+  const { output: llmOut, usage } = await callStructured<LlmOutput>({
     system: SYSTEM_PROMPT,
     user,
     schema: RESPONSE_SCHEMA as unknown as Record<string, unknown>,
@@ -177,5 +180,6 @@ Decide compliance and cite VERBATIM snippets from the chunks above.`;
     rationale: llmOut.rationale,
     suggestedComment: llmOut.suggestedComment,
     evidence: verifiedCitations,
+    usage,
   };
 }

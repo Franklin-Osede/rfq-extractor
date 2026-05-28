@@ -14,6 +14,7 @@
 import { and, eq } from 'drizzle-orm';
 import { NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
+import { estimateCostUsd, type LlmUsage } from '@/lib/llm';
 import type { Chunk } from '@/lib/retrieval';
 import { analyseOneTagRisk, toRiskSignal } from '@/lib/risks';
 import { analyseTagSilAllocations } from '@/lib/sis-risks';
@@ -124,6 +125,7 @@ export async function POST(
   // Concurrent sweep over tags.
   const errors: Array<{ tagNo: string; error: string }> = [];
   const persistedSignals: string[] = []; // ids
+  const usages: LlmUsage[] = [];
   let cursor = 0;
 
   async function worker() {
@@ -136,6 +138,7 @@ export async function POST(
           { tagNo: tag.tagNo, tcmServiceDescription: tag.heliosServiceDescription },
           idsChunks,
         );
+        if (analysed.usage) usages.push(analysed.usage);
         const signal = toRiskSignal(analysed, tcmDocId, tag.heliosServiceDescription);
         if (!signal) continue;
 
@@ -219,6 +222,14 @@ export async function POST(
       return acc;
     }, {});
 
+  // LLM telemetry for the risk sweep. SIS pass is deterministic and adds
+  // zero LLM cost — only the IDS analyser contributes to usage here.
+  const inputTokens = usages.reduce((s, u) => s + u.inputTokens, 0);
+  const outputTokens = usages.reduce((s, u) => s + u.outputTokens, 0);
+  const costUsd = usages.reduce((s, u) => s + estimateCostUsd(u), 0);
+  const totalLatencyMs = usages.reduce((s, u) => s + u.latencyMs, 0);
+  const avgLatencyMs = usages.length > 0 ? Math.round(totalLatencyMs / usages.length) : 0;
+
   return NextResponse.json({
     jobId,
     tagsAnalysed: tags.length,
@@ -227,5 +238,14 @@ export async function POST(
     errors,
     bySeverity,
     sis: sisStats,
+    llm: {
+      provider: usages[0]?.provider ?? null,
+      model: usages[0]?.model ?? null,
+      calls: usages.length,
+      inputTokens,
+      outputTokens,
+      costUsd: Number(costUsd.toFixed(4)),
+      avgLatencyMs,
+    },
   });
 }

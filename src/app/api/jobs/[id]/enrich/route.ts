@@ -16,6 +16,7 @@ import { and, eq, ne } from 'drizzle-orm';
 import { NextResponse } from 'next/server';
 import { db, schema } from '@/lib/db';
 import { enrichRequirement, type EnrichInput, type EnrichOutput } from '@/lib/enrich';
+import { estimateCostUsd } from '@/lib/llm';
 import type { Chunk } from '@/lib/retrieval';
 
 export const runtime = 'nodejs';
@@ -143,6 +144,22 @@ export async function POST(
   );
   const totalCitations = results.reduce((sum, r) => sum + r.evidence.length, 0);
 
+  // Cost + latency telemetry across the LLM sweep. Skipped no-op rows
+  // (usage === null) contribute nothing — we only count calls we actually
+  // made. Latency stats use wall time per call (concurrent calls
+  // overlap), so totalLatencyMs is "sum of per-call durations", not the
+  // sweep duration. The dry-run prints the sweep duration separately.
+  const calls = results
+    .map((r) => r.usage)
+    .filter((u): u is NonNullable<typeof u> => u !== null);
+  const inputTokens = calls.reduce((s, u) => s + u.inputTokens, 0);
+  const outputTokens = calls.reduce((s, u) => s + u.outputTokens, 0);
+  const costUsd = calls.reduce((s, u) => s + estimateCostUsd(u), 0);
+  const totalLatencyMs = calls.reduce((s, u) => s + u.latencyMs, 0);
+  const avgLatencyMs = calls.length > 0 ? Math.round(totalLatencyMs / calls.length) : 0;
+  const provider = calls[0]?.provider ?? null;
+  const model = calls[0]?.model ?? null;
+
   return NextResponse.json({
     jobId,
     enriched: results.length,
@@ -150,5 +167,14 @@ export async function POST(
     errors,
     byCompliance,
     citations: { total: totalCitations, verified: verifiedCitations },
+    llm: {
+      provider,
+      model,
+      calls: calls.length,
+      inputTokens,
+      outputTokens,
+      costUsd: Number(costUsd.toFixed(4)),
+      avgLatencyMs,
+    },
   });
 }

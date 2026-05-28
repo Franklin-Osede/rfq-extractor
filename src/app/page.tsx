@@ -80,11 +80,22 @@ type FullJob = {
   risks: RiskRow[];
 };
 
+type LlmTelemetry = {
+  provider: string | null;
+  model: string | null;
+  calls: number;
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+  avgLatencyMs: number;
+};
+
 type EnrichStats = {
   enriched: number;
   failed: number;
   byCompliance: Record<string, number>;
   citations: { total: number; verified: number };
+  llm?: LlmTelemetry;
 };
 
 type RiskStats = {
@@ -101,6 +112,7 @@ type RiskStats = {
     aligned: number;
     notInSis: number;
   };
+  llm?: LlmTelemetry;
 };
 
 type Phase = 'idle' | 'uploading' | 'enriching' | 'done' | 'failed';
@@ -360,7 +372,9 @@ export default function Home() {
         <RiskPanel risks={result.risks} />
       )}
 
-      {enrichStats && phase === 'done' && <EnrichSummary stats={enrichStats} />}
+      {enrichStats && phase === 'done' && (
+        <EnrichSummary stats={enrichStats} riskStats={riskStats} />
+      )}
 
       {phase === 'done' && result && result.requirements.length > 0 && (
         <ExportBar jobId={result.job.id} hasDeviations={result.requirements.some((r) => r.reviewStatus === 'deviation')} />
@@ -664,12 +678,32 @@ function NoCorpusWarning({
   );
 }
 
-function EnrichSummary({ stats }: { stats: EnrichStats }) {
+function EnrichSummary({
+  stats,
+  riskStats,
+}: {
+  stats: EnrichStats;
+  riskStats: RiskStats | null;
+}) {
   const total = stats.enriched + stats.failed;
   const groundingRate =
     stats.citations.total > 0
       ? Math.round((100 * stats.citations.verified) / stats.citations.total)
       : 0;
+
+  // Aggregate LLM telemetry across both sweeps (enrich + IDS risk). SIS pass
+  // adds zero cost — it's deterministic. The numbers shown here are for the
+  // run that just finished; deep-linked old jobs won't have llm fields.
+  const enrichLlm = stats.llm;
+  const risksLlm = riskStats?.llm ?? null;
+  const totalCalls = (enrichLlm?.calls ?? 0) + (risksLlm?.calls ?? 0);
+  const totalCost = (enrichLlm?.costUsd ?? 0) + (risksLlm?.costUsd ?? 0);
+  const totalInTokens = (enrichLlm?.inputTokens ?? 0) + (risksLlm?.inputTokens ?? 0);
+  const totalOutTokens = (enrichLlm?.outputTokens ?? 0) + (risksLlm?.outputTokens ?? 0);
+  const avgLatency = (enrichLlm?.avgLatencyMs ?? 0) || (risksLlm?.avgLatencyMs ?? 0);
+  const provider = enrichLlm?.provider ?? risksLlm?.provider ?? null;
+  const model = enrichLlm?.model ?? risksLlm?.model ?? null;
+
   return (
     <div className="mb-8 p-4 bg-zinc-50 border border-zinc-200 rounded text-xs">
       <div className="flex flex-wrap gap-x-8 gap-y-2">
@@ -682,8 +716,28 @@ function EnrichSummary({ stats }: { stats: EnrichStats }) {
           <Stat key={k} label={k} value={String(v)} />
         ))}
       </div>
+      {totalCalls > 0 && (
+        <div className="mt-3 pt-3 border-t border-zinc-200 flex flex-wrap gap-x-8 gap-y-2 text-zinc-700">
+          <Stat
+            label="LLM"
+            value={`${provider ?? '?'} · ${model ?? '?'}`}
+          />
+          <Stat label="Calls" value={String(totalCalls)} />
+          <Stat
+            label="Tokens"
+            value={`${formatTokens(totalInTokens)} in / ${formatTokens(totalOutTokens)} out`}
+          />
+          <Stat label="Estimated cost" value={`$${totalCost.toFixed(4)}`} />
+          <Stat label="Avg call" value={`${avgLatency}ms`} />
+        </div>
+      )}
     </div>
   );
+}
+
+function formatTokens(n: number): string {
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
 }
 
 function Stat({ label, value }: { label: string; value: string }) {

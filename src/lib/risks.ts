@@ -23,7 +23,7 @@
  * with concurrency 4. Negligible vs. the enrichment sweep.
  */
 
-import { callStructured } from './llm';
+import { callStructured, type LlmUsage } from './llm';
 import type { Chunk } from './retrieval';
 import { retrieveChunks } from './retrieval';
 import type { Citation, RiskSeverity, RiskSignal } from './types';
@@ -80,6 +80,8 @@ export type AnalysedTagRisk = {
   severity: 'none' | RiskSeverity;
   reason: string;
   citations: Citation[];
+  /** null when the LLM wasn't called (no candidate chunks for the tag). */
+  usage: LlmUsage | null;
 };
 
 /**
@@ -100,6 +102,7 @@ export async function analyseOneTagRisk(
       severity: 'none',
       reason: 'Tag not located in the indexed IDS — cannot cross-check.',
       citations: [],
+      usage: null,
     };
   }
 
@@ -117,7 +120,7 @@ ${chunkContext}
 
 Extract the IDS service description for this tag and decide whether it materially aligns with the TCM description.`;
 
-  const result = await callStructured<LlmRiskOutput>({
+  const { output: result, usage } = await callStructured<LlmRiskOutput>({
     system: SYSTEM_PROMPT,
     user,
     schema: RISK_SCHEMA as unknown as Record<string, unknown>,
@@ -158,6 +161,7 @@ Extract the IDS service description for this tag and decide whether it materiall
         ? `${result.reason} [unverified — no IDS chunk contained the extracted description]`
         : result.reason,
     citations,
+    usage,
   };
 }
 
