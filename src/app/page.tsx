@@ -142,6 +142,25 @@ export default function Home() {
     setPhase('idle');
   }
 
+  /**
+   * Merge a freshly updated requirement (from PATCH /api/requirements/[id])
+   * back into the result, recompute the stats panel. Optimistic UI: the
+   * row reflects the change immediately, no re-fetch round-trip.
+   */
+  function handleRequirementUpdated(updated: RequirementRow) {
+    setResult((prev) => {
+      if (!prev) return prev;
+      const next = {
+        ...prev,
+        requirements: prev.requirements.map((r) =>
+          r.id === updated.id ? updated : r,
+        ),
+      };
+      setEnrichStats(computeStatsFromJob(next));
+      return next;
+    });
+  }
+
   async function onUpload() {
     if (files.length === 0) return;
     setError(null);
@@ -296,7 +315,13 @@ export default function Home() {
         <ExportBar jobId={result.job.id} hasDeviations={result.requirements.some((r) => r.reviewStatus === 'deviation')} />
       )}
 
-      {result && <ResultView data={result} phase={phase} />}
+      {result && (
+        <ResultView
+          data={result}
+          phase={phase}
+          onRowUpdated={handleRequirementUpdated}
+        />
+      )}
     </main>
   );
 }
@@ -549,7 +574,15 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ResultView({ data, phase }: { data: FullJob; phase: Phase }) {
+function ResultView({
+  data,
+  phase,
+  onRowUpdated,
+}: {
+  data: FullJob;
+  phase: Phase;
+  onRowUpdated: (updated: RequirementRow) => void;
+}) {
   return (
     <div className="space-y-8">
       <Section title={`Documents (${data.documents.length})`}>
@@ -583,7 +616,11 @@ function ResultView({ data, phase }: { data: FullJob; phase: Phase }) {
         {data.requirements.length === 0 ? (
           <Note>No TCM template was detected in the upload, so no requirements were loaded.</Note>
         ) : (
-          <RequirementsTable rows={data.requirements} phase={phase} />
+          <RequirementsTable
+            rows={data.requirements}
+            phase={phase}
+            onRowUpdated={onRowUpdated}
+          />
         )}
       </Section>
 
@@ -617,7 +654,15 @@ function ResultView({ data, phase }: { data: FullJob; phase: Phase }) {
   );
 }
 
-function RequirementsTable({ rows, phase }: { rows: RequirementRow[]; phase: Phase }) {
+function RequirementsTable({
+  rows,
+  phase,
+  onRowUpdated,
+}: {
+  rows: RequirementRow[];
+  phase: Phase;
+  onRowUpdated: (updated: RequirementRow) => void;
+}) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   function toggle(id: string) {
@@ -651,7 +696,10 @@ function RequirementsTable({ rows, phase }: { rows: RequirementRow[]; phase: Pha
                   className="border-t hover:bg-zinc-50 cursor-pointer"
                   onClick={() => toggle(r.id)}
                 >
-                  <td className="px-3 py-2 font-medium align-top">{r.reqId}</td>
+                  <td className="px-3 py-2 font-medium align-top">
+                    <ReviewStatusDot status={r.reviewStatus} />
+                    {r.reqId}
+                  </td>
                   <td className="px-3 py-2 text-zinc-500 align-top">{r.rfqSectionRef}</td>
                   <td className="px-3 py-2 align-top">{r.description}</td>
                   <td className="px-3 py-2 align-top">
@@ -670,10 +718,10 @@ function RequirementsTable({ rows, phase }: { rows: RequirementRow[]; phase: Pha
                     )}
                   </td>
                 </tr>
-                {isExpanded && (r.rationale || r.evidence.length > 0 || r.suggestedComment) && (
+                {isExpanded && (
                   <tr className="bg-zinc-50">
                     <td colSpan={5} className="px-3 py-3 border-t border-zinc-200">
-                      <ExpandedDetail row={r} />
+                      <ExpandedDetail row={r} onRowUpdated={onRowUpdated} />
                     </td>
                   </tr>
                 )}
@@ -686,7 +734,13 @@ function RequirementsTable({ rows, phase }: { rows: RequirementRow[]; phase: Pha
   );
 }
 
-function ExpandedDetail({ row }: { row: RequirementRow }) {
+function ExpandedDetail({
+  row,
+  onRowUpdated,
+}: {
+  row: RequirementRow;
+  onRowUpdated: (updated: RequirementRow) => void;
+}) {
   return (
     <div className="space-y-3 text-xs">
       {row.rationale && (
@@ -718,7 +772,220 @@ function ExpandedDetail({ row }: { row: RequirementRow }) {
           </ul>
         </Field>
       )}
+      <ReviewActions row={row} onRowUpdated={onRowUpdated} />
     </div>
+  );
+}
+
+/**
+ * Inline vendor decision form. Lets the proposal engineer:
+ *   - Override the LLM-suggested compliance (or use as-is).
+ *   - Edit the auto-drafted vendor comment.
+ *   - Add a deviation reference (Att. J row ID) for D-marked rows.
+ *   - Set the row's reviewStatus via three actions:
+ *       Approve         → vendorCompliance defaults to suggested (or current
+ *                          override); status = 'approved'.
+ *       Mark deviation  → vendorCompliance = 'D'; status = 'deviation'.
+ *                          Surfaces the deviation-ref field.
+ *       Reject          → status = 'rejected' (engineer flagged this LLM
+ *                          output as wrong; row will not appear in the
+ *                          filled TCM compliance column).
+ *
+ * Saves via PATCH /api/requirements/[id] and updates the row in place
+ * (optimistic — the response payload replaces the cached row).
+ */
+function ReviewActions({
+  row,
+  onRowUpdated,
+}: {
+  row: RequirementRow;
+  onRowUpdated: (updated: RequirementRow) => void;
+}) {
+  const [override, setOverride] = useState<'' | 'C' | 'D' | 'N/A'>(
+    (row.vendorCompliance as 'C' | 'D' | 'N/A' | null) ?? '',
+  );
+  const [comment, setComment] = useState<string>(
+    row.vendorComment ?? row.suggestedComment ?? '',
+  );
+  const [devRef, setDevRef] = useState<string>(row.deviationRef ?? '');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function patch(payload: Record<string, unknown>) {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch(`/api/requirements/${encodeURIComponent(row.id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        setSaveError(`HTTP ${res.status}`);
+        return;
+      }
+      const updated = (await res.json()) as RequirementRow;
+      onRowUpdated(updated);
+    } catch (e) {
+      setSaveError(String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function approve() {
+    const effective = override || row.suggestedCompliance || 'C';
+    patch({
+      vendorCompliance: effective === 'Review' ? null : effective,
+      vendorComment: comment,
+      reviewStatus: 'approved',
+    });
+  }
+
+  function markDeviation() {
+    patch({
+      vendorCompliance: 'D',
+      vendorComment: comment,
+      deviationRef: devRef || null,
+      reviewStatus: 'deviation',
+    });
+  }
+
+  function reject() {
+    patch({
+      vendorCompliance: null,
+      reviewStatus: 'rejected',
+    });
+  }
+
+  function reset() {
+    patch({
+      vendorCompliance: null,
+      vendorComment: null,
+      deviationRef: null,
+      reviewStatus: 'pending',
+    });
+    setOverride('');
+    setComment(row.suggestedComment ?? '');
+    setDevRef('');
+  }
+
+  return (
+    <Field label="Vendor decision">
+      <div className="bg-white border border-zinc-200 rounded p-3 space-y-3">
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="text-zinc-500 text-[10px] uppercase tracking-wide">
+            Override compliance
+          </label>
+          <select
+            value={override}
+            onChange={(e) => setOverride(e.target.value as '' | 'C' | 'D' | 'N/A')}
+            className="border border-zinc-300 rounded px-2 py-1 text-xs"
+            disabled={saving}
+          >
+            <option value="">use suggestion ({row.suggestedCompliance ?? 'Review'})</option>
+            <option value="C">C — Comply</option>
+            <option value="D">D — Deviate</option>
+            <option value="N/A">N/A — Not Applicable</option>
+          </select>
+          <span className="text-zinc-400 text-[10px]">
+            current vendor pick: {row.vendorCompliance ?? '—'}
+          </span>
+        </div>
+
+        <div>
+          <label className="text-zinc-500 text-[10px] uppercase tracking-wide block mb-1">
+            Vendor comment (appears in TCM column F)
+          </label>
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            disabled={saving}
+            rows={2}
+            className="w-full border border-zinc-300 rounded px-2 py-1 text-xs font-mono"
+            placeholder="(no comment)"
+          />
+        </div>
+
+        {(override === 'D' || row.reviewStatus === 'deviation') && (
+          <div>
+            <label className="text-zinc-500 text-[10px] uppercase tracking-wide block mb-1">
+              Deviation Ref (Att. J row ID)
+            </label>
+            <input
+              value={devRef}
+              onChange={(e) => setDevRef(e.target.value)}
+              disabled={saving}
+              className="border border-zinc-300 rounded px-2 py-1 text-xs font-mono"
+              placeholder="e.g. DEV-007"
+            />
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={approve}
+            disabled={saving}
+            className="px-3 py-1 rounded bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 disabled:opacity-50"
+          >
+            ✓ Approve
+          </button>
+          <button
+            onClick={markDeviation}
+            disabled={saving}
+            className="px-3 py-1 rounded bg-amber-600 text-white text-xs font-medium hover:bg-amber-700 disabled:opacity-50"
+          >
+            ⚠ Mark deviation
+          </button>
+          <button
+            onClick={reject}
+            disabled={saving}
+            className="px-3 py-1 rounded bg-zinc-200 text-zinc-700 text-xs font-medium hover:bg-zinc-300 disabled:opacity-50"
+          >
+            ✗ Reject
+          </button>
+          {row.reviewStatus !== 'pending' && (
+            <button
+              onClick={reset}
+              disabled={saving}
+              className="px-3 py-1 rounded text-zinc-500 text-xs underline hover:text-zinc-700"
+            >
+              reset
+            </button>
+          )}
+          {saving && <span className="text-xs text-zinc-500">saving…</span>}
+          {saveError && (
+            <span className="text-xs text-red-700">error: {saveError}</span>
+          )}
+          {!saving && !saveError && row.reviewStatus !== 'pending' && (
+            <span className="text-xs text-zinc-500">
+              status: <strong>{row.reviewStatus}</strong>
+            </span>
+          )}
+        </div>
+      </div>
+    </Field>
+  );
+}
+
+/**
+ * Tiny coloured dot next to the Req ID indicating where the row is in the
+ * review workflow: pending / approved / edited / rejected / deviation.
+ */
+function ReviewStatusDot({ status }: { status: string }) {
+  const styles: Record<string, { color: string; title: string }> = {
+    pending: { color: 'bg-zinc-300', title: 'Pending review' },
+    approved: { color: 'bg-emerald-500', title: 'Approved' },
+    edited: { color: 'bg-blue-500', title: 'Edited' },
+    rejected: { color: 'bg-zinc-500', title: 'Rejected' },
+    deviation: { color: 'bg-amber-500', title: 'Marked as deviation' },
+  };
+  const s = styles[status] ?? styles['pending'];
+  return (
+    <span
+      title={s.title}
+      className={`inline-block w-2 h-2 rounded-full mr-2 align-middle ${s.color}`}
+    />
   );
 }
 
