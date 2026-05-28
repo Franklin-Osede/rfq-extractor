@@ -354,7 +354,7 @@ export default function Home() {
 
       <div className="grid grid-cols-12 gap-6">
         {/* ─── Left column: upload + recent jobs ─── */}
-        <div className="col-span-12 lg:col-span-3 space-y-4">
+        <div className="col-span-12 lg:col-span-4 space-y-4">
           <section>
             <div className="border-2 border-dashed border-zinc-300 rounded p-4">
               <input
@@ -440,7 +440,7 @@ export default function Home() {
         </div>
 
         {/* ─── Right column: results ─── */}
-        <div className="col-span-12 lg:col-span-9 space-y-4">
+        <div className="col-span-12 lg:col-span-8 space-y-4">
           {phase === 'done' && result && (
             <NoCorpusWarning data={result} stats={enrichStats} />
           )}
@@ -477,12 +477,7 @@ export default function Home() {
             />
           )}
 
-          {phase === 'idle' && !result && (
-            <div className="rounded border border-zinc-200 bg-zinc-50/40 p-6 text-center text-xs text-zinc-500">
-              Drop the Helios RFQ package on the left, or pick a previous run
-              from <strong className="text-zinc-700">Recent jobs</strong>.
-            </div>
-          )}
+          {phase === 'idle' && !result && <IdleWelcome />}
         </div>
       </div>
     </main>
@@ -490,6 +485,107 @@ export default function Home() {
 }
 
 // ─── Components ──────────────────────────────────────────────────────────────
+
+/**
+ * Idle-state right column. Replaces the empty wireframe with information
+ * the demo viewer can scan in under 15 seconds: what the pipeline does,
+ * what the cross-document risk panel cross-checks, and what a typical
+ * run looks like on cost/latency. No marketing — every number here is
+ * one we can defend with the dry-run output.
+ */
+function IdleWelcome() {
+  const stages = [
+    { n: 1, title: 'Classify', body: 'filename + magic-byte sniffing identifies TCM / IDS / spec / RFQ / etc.' },
+    { n: 2, title: 'Parse', body: 'TCM .xlsx → 108 requirements + 29 tag-level rows; PDFs → page-indexed chunks.' },
+    { n: 3, title: 'Enrich', body: 'one LLM call per requirement; deterministic snippet validator drops ungrounded citations.' },
+    { n: 4, title: 'Cross-check', body: 'tags scored against IDS (LLM) and SIS allocation table (deterministic regex).' },
+    { n: 5, title: 'Export', body: 'fills the original Helios TCM .xlsx + populates the DEV Register template.' },
+  ];
+  return (
+    <div className="space-y-4">
+      <section className="rounded-lg border border-zinc-200 bg-white p-5">
+        <h2 className="text-sm font-semibold text-zinc-800 mb-3">Pipeline</h2>
+        <ol className="space-y-2.5">
+          {stages.map((s) => (
+            <li key={s.n} className="flex gap-3 text-xs">
+              <span className="shrink-0 w-5 h-5 rounded-full bg-zinc-900 text-white text-[10px] flex items-center justify-center font-semibold">
+                {s.n}
+              </span>
+              <div>
+                <span className="font-semibold text-zinc-800">{s.title}</span>
+                <span className="text-zinc-600"> — {s.body}</span>
+              </div>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <section className="rounded-lg border border-zinc-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-zinc-800 mb-2">
+            Cross-document risk detection
+          </h2>
+          <p className="text-xs text-zinc-600 mb-3">
+            Two independent evidence sources per tag, two different strategies:
+          </p>
+          <ul className="space-y-2 text-xs">
+            <li className="flex gap-2">
+              <Badge variant="outline" className="text-[9px] uppercase tracking-wide shrink-0">
+                IDS
+              </Badge>
+              <span className="text-zinc-700">
+                LLM extracts the IDS service description; validator confirms
+                the snippet appears in the cited page before surfacing the
+                mismatch.
+              </span>
+            </li>
+            <li className="flex gap-2">
+              <Badge variant="outline" className="text-[9px] uppercase tracking-wide shrink-0">
+                SIS
+              </Badge>
+              <span className="text-zinc-700">
+                Deterministic parser reads the SIL allocation table on page 4,
+                expands paired (A/B) and range (7001 to 7006) notations,
+                integer-compares against the TCM SIL.
+              </span>
+            </li>
+          </ul>
+        </section>
+
+        <section className="rounded-lg border border-zinc-200 bg-white p-5">
+          <h2 className="text-sm font-semibold text-zinc-800 mb-2">
+            A typical run
+          </h2>
+          <p className="text-xs text-zinc-600 mb-3">
+            Numbers from the dry-run against the 14-file Helios package
+            (gpt-4o-mini, tier 1):
+          </p>
+          <dl className="space-y-1.5 text-xs">
+            <Row label="Wall time" value="~120s (enrich 117s · risks 8s)" />
+            <Row label="LLM cost" value="~$0.08 per job" />
+            <Row label="Requirements enriched" value="108 / 108" />
+            <Row label="Citation grounding" value="~76% verified" />
+            <Row label="HIGH risk signals" value="22 (12 IDS + 10 SIS)" />
+          </dl>
+        </section>
+      </div>
+
+      <p className="text-[11px] text-zinc-500 text-center px-4">
+        Drop the package on the left to kick off a fresh run, or open a
+        previous job from <strong className="text-zinc-700">Recent jobs</strong>.
+      </p>
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between border-b border-zinc-100 pb-1 last:border-0">
+      <dt className="text-zinc-500">{label}</dt>
+      <dd className="font-medium text-zinc-800">{value}</dd>
+    </div>
+  );
+}
 
 /**
  * Compact status bar shown in the header. Renders one of three modes:
