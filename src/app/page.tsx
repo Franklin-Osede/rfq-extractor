@@ -73,7 +73,12 @@ type RiskRow = {
 };
 
 type FullJob = {
-  job: { id: string; status: string };
+  job: {
+    id: string;
+    status: string;
+    /** Persisted by /risks; null until the sweep has run at least once. */
+    riskRunSummary: RiskStats | null;
+  };
   documents: DocOut[];
   requirements: RequirementRow[];
   tagRequirements: TagRow[];
@@ -146,6 +151,9 @@ export default function Home() {
         const data = (await r.json()) as FullJob;
         setResult(data);
         setEnrichStats(computeStatsFromJob(data));
+        // Restore the partial-failure warning on reload. Without this,
+        // a job where /risks had errors would look "clean" on deep-link.
+        if (data.job.riskRunSummary) setRiskStats(data.job.riskRunSummary);
         setPhase('done');
       })
       .catch((e) => {

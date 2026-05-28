@@ -6,8 +6,12 @@
  * calls the LLM with a structured-output schema, validates citations
  * deterministically, and updates the row in DB.
  *
- * Concurrency: limited to 4 in-flight LLM calls to stay below rate limits.
- * For 108 reqs this completes in ~40-60 seconds.
+ * Concurrency: limited to 4 in-flight LLM calls. Empirically tested at
+ * 4 / 6 / 8 against gpt-4o-mini tier 1 (200k TPM): 4 lands at 117s with
+ * 0 failures; 6 lands at 114s with ~7 failures (the TPM cap dominates,
+ * not concurrency); 8 produces 50+ failures. Retries (maxRetries=5 in
+ * llm.ts) help with transient spikes but cannot lift the TPM ceiling.
+ * To go faster than ~117s, bump the OpenAI tier.
  *
  * The route returns aggregate stats; the UI re-fetches the full job state.
  */

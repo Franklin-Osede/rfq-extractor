@@ -106,7 +106,14 @@ export async function callStructured<T>(
 async function callAnthropic<T>(
   opts: Required<StructuredCallOptions>,
 ): Promise<LlmCallResult<T>> {
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! });
+  // maxRetries=5 (default is 2). The SDK does exponential backoff with
+  // jitter on 429s and 5xx; bumping the budget lets the enrichment sweep
+  // run at concurrency 6 (just at the standard TPM cap) without
+  // surfacing the occasional rate-limit spike to the user.
+  const client = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY!,
+    maxRetries: 5,
+  });
   const model = 'claude-sonnet-4-5-20250929'; // Sonnet 4.5; pin Sonnet 4.6 once it's GA.
 
   const t0 = Date.now();
@@ -148,7 +155,11 @@ async function callAnthropic<T>(
 async function callOpenAI<T>(
   opts: Required<StructuredCallOptions>,
 ): Promise<LlmCallResult<T>> {
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
+  // See callAnthropic for the rationale on maxRetries=5.
+  const client = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY!,
+    maxRetries: 5,
+  });
   const model = 'gpt-4o-mini';
 
   const t0 = Date.now();

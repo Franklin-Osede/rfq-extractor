@@ -1,0 +1,1 @@
+ALTER TABLE `jobs` ADD `risk_run_summary` text;

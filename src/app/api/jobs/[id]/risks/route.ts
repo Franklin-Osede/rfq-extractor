@@ -230,8 +230,7 @@ export async function POST(
   const totalLatencyMs = usages.reduce((s, u) => s + u.latencyMs, 0);
   const avgLatencyMs = usages.length > 0 ? Math.round(totalLatencyMs / usages.length) : 0;
 
-  return NextResponse.json({
-    jobId,
+  const summary = {
     tagsAnalysed: tags.length,
     risksDetected: persistedSignals.length,
     failed: errors.length,
@@ -247,5 +246,17 @@ export async function POST(
       costUsd: Number(costUsd.toFixed(4)),
       avgLatencyMs,
     },
-  });
+    ranAt: new Date().toISOString(),
+  };
+
+  // Persist the summary so partial failures survive page reloads. Without
+  // this, a deep-link load only sees the riskSignals table — which doesn't
+  // record which tags failed — and the <PartialRiskWarning> banner is
+  // silently dropped. See round-3 audit finding #1.
+  db.update(schema.jobs)
+    .set({ riskRunSummary: summary })
+    .where(eq(schema.jobs.id, jobId))
+    .run();
+
+  return NextResponse.json({ jobId, ...summary });
 }

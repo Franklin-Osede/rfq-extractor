@@ -31,6 +31,39 @@ import type {
 
 // ─── jobs ────────────────────────────────────────────────────────────────────
 
+/**
+ * Persisted summary of the last /risks sweep — failed-tag counts, errors,
+ * and LLM telemetry. Stored on the job (not on risk_signals) so the UI
+ * can reconstruct the partial-failure warning after a page reload, not
+ * just during the active upload flow.
+ */
+export type RiskRunSummary = {
+  tagsAnalysed: number;
+  risksDetected: number;
+  failed: number;
+  errors: Array<{ tagNo: string; error: string }>;
+  bySeverity: Record<string, number>;
+  sis: {
+    sisTableFound: boolean;
+    sisTagsAllocated: number;
+    tagsAnalysed: number;
+    hardMismatches: number;
+    tcmSilent: number;
+    aligned: number;
+    notInSis: number;
+  };
+  llm: {
+    provider: string | null;
+    model: string | null;
+    calls: number;
+    inputTokens: number;
+    outputTokens: number;
+    costUsd: number;
+    avgLatencyMs: number;
+  };
+  ranAt: string;
+};
+
 export const jobs = sqliteTable('jobs', {
   id: text('id').primaryKey(),
   status: text('status').$type<JobStatus>().notNull(),
@@ -39,6 +72,7 @@ export const jobs = sqliteTable('jobs', {
     .default(sql`(unixepoch())`),
   completedAt: integer('completed_at', { mode: 'timestamp' }),
   error: text('error'),
+  riskRunSummary: text('risk_run_summary', { mode: 'json' }).$type<RiskRunSummary | null>(),
 });
 
 // ─── documents ───────────────────────────────────────────────────────────────

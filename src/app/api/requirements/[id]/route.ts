@@ -81,6 +81,17 @@ export async function PATCH(
     (update.deviationRef ?? existing.deviationRef) == null;
 
   if (transitioningToDeviation) {
+    // Concurrency note. Today this is race-free because better-sqlite3 is
+    // fully synchronous and Node's single-threaded event loop guarantees
+    // the SELECT + UPDATE below run atomically without yielding. When this
+    // service migrates to Postgres (see DECISIONS.md D-09), the queries
+    // become async and two concurrent PATCH calls would both read the
+    // same `maxN` and assign duplicate DEV-NNN refs. The fix at that point
+    // is one of: (a) wrap this block in a SERIALIZABLE transaction;
+    // (b) add a unique index on (job_id, deviation_ref) and retry on
+    // conflict; or (c) move ref allocation into a dedicated SQL UPSERT
+    // that derives the next number atomically. Documenting here so the
+    // migration PR can't miss it.
     const peers = db
       .select({ deviationRef: schema.requirements.deviationRef })
       .from(schema.requirements)
