@@ -42,6 +42,10 @@ type RequirementRow = {
   suggestedComment: string | null;
   rationale: string | null;
   evidence: Citation[];
+  // Vendor-confirmed fields (post-review actions).
+  vendorCompliance: 'C' | 'D' | 'N/A' | 'Review' | null;
+  vendorComment: string | null;
+  deviationRef: string | null;
   reviewStatus: string;
   enrichedAt: string | null;
 };
@@ -485,17 +489,23 @@ function ExportBar({
         >
           ⬇ filled TCM.xlsx
         </a>
-        <button
-          disabled={!hasDeviations}
-          className="px-4 py-2 rounded bg-zinc-700 text-zinc-300 font-medium text-xs disabled:opacity-40 disabled:cursor-not-allowed hover:bg-zinc-600"
-          title={
-            hasDeviations
-              ? 'Download the Deviation/Exception Register'
-              : 'No deviations marked yet — mark requirements as deviation to populate this file'
-          }
-        >
-          ⬇ DEV Register.xlsx
-        </button>
+        {hasDeviations ? (
+          <a
+            href={`/api/jobs/${jobId}/export/dev-register`}
+            download
+            className="px-4 py-2 rounded bg-amber-400 text-zinc-900 font-medium text-xs hover:bg-amber-300"
+            title="Download the populated Deviation/Exception Register"
+          >
+            ⬇ DEV Register.xlsx
+          </a>
+        ) : (
+          <span
+            className="px-4 py-2 rounded bg-zinc-700 text-zinc-400 font-medium text-xs opacity-50 cursor-not-allowed"
+            title="No deviations marked yet — mark requirements as deviation to populate this file"
+          >
+            ⬇ DEV Register.xlsx
+          </span>
+        )}
       </div>
     </div>
   );

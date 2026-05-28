@@ -37,6 +37,16 @@ export type ExportableRequirement = {
   deviationRef: string | null;
 };
 
+/** Shape of a deviation row going into the DEV Register. */
+export type DeviationRow = {
+  reqId: string;
+  rfqSectionRef: string;
+  description: string;
+  deviationDescription: string; // = vendorComment or suggestedComment
+  justification: string; // = rationale
+  deviationRef: string | null; // optional DEV-NNN override from the user
+};
+
 export async function exportFilledTcm(
   originalTcmPath: string,
   requirements: ExportableRequirement[],
@@ -89,6 +99,112 @@ export async function exportFilledTcm(
       : comment;
     if (finalComment) row.getCell(6).value = finalComment;
   });
+
+  const out = await workbook.xlsx.writeBuffer();
+  return Buffer.from(out);
+}
+
+/**
+ * Re-opens the Helios DEV Register template and populates the Deviation
+ * Register sheet with one row per requirement the vendor marked as a
+ * deviation. The "DELETE BEFORE SUBMISSION" example rows in the template
+ * are stripped first. Pre-numbered DEV-001..DEV-NNN slot rows are reused
+ * in order. If we run out, additional rows are appended with the next
+ * sequential number.
+ *
+ * Columns (per the template):
+ *   A — Deviation No. (DEV-NNN)
+ *   B — Date Raised
+ *   C — RFQ Reference (Section / Attachment / Page)
+ *   D — Requirement Description (as stated in RFQ)
+ *   E — Deviation Description (what vendor is offering instead)
+ *   F — Justification (technical reason)
+ *   G — Alternative Proposed (vendor's proposed solution) — left blank
+ *   H — Risk / Impact — left blank for vendor to fill at PE time
+ *   I — Vendor Disposition — set to "Deviation"
+ *   J — Helios Disposition — left blank (COMPANY use)
+ */
+export async function exportDevRegister(
+  originalDevPath: string,
+  deviations: DeviationRow[],
+): Promise<Buffer> {
+  const fileBuf = await readFile(originalDevPath);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(
+    fileBuf.buffer.slice(
+      fileBuf.byteOffset,
+      fileBuf.byteOffset + fileBuf.byteLength,
+    ) as ArrayBuffer,
+  );
+
+  const sheet = workbook.worksheets.find((w) =>
+    /deviation\s*register/i.test(w.name),
+  );
+  if (!sheet) {
+    throw new Error(
+      'The provided DEV Register workbook is missing the "Deviation Register" sheet',
+    );
+  }
+
+  // Step 1 — locate example rows ("DEV-EX-NNN — EXAMPLE — DELETE BEFORE
+  // SUBMISSION") and clear them. Helios's template includes 3 of these as
+  // guidance for the vendor; we strip them so the submitted file is clean.
+  const rowsToClear: number[] = [];
+  const slotRows: number[] = [];
+  sheet.eachRow((row, rowIndex) => {
+    if (rowIndex === 1) return; // header
+    const a = String(row.getCell(1).value ?? '').trim();
+    if (/^DEV-EX-/i.test(a)) {
+      rowsToClear.push(rowIndex);
+    } else if (/^DEV-\d{3,}$/i.test(a)) {
+      slotRows.push(rowIndex);
+    }
+  });
+  for (const r of rowsToClear) {
+    const row = sheet.getRow(r);
+    for (let c = 1; c <= 10; c++) row.getCell(c).value = null;
+  }
+
+  // Step 2 — write each deviation into a slot row (or append).
+  const today = new Date().toISOString().slice(0, 10);
+  let nextSlotIdx = 0;
+
+  // Find the highest existing slot number so any overflow appends sequentially.
+  let highestSlot = 0;
+  for (const r of slotRows) {
+    const a = String(sheet.getRow(r).getCell(1).value ?? '').trim();
+    const m = a.match(/^DEV-(\d+)$/i);
+    if (m) highestSlot = Math.max(highestSlot, parseInt(m[1], 10));
+  }
+
+  for (const d of deviations) {
+    let targetRow: ExcelJS.Row;
+    let assignedNo: string;
+
+    if (nextSlotIdx < slotRows.length) {
+      const rowIdx = slotRows[nextSlotIdx++];
+      targetRow = sheet.getRow(rowIdx);
+      assignedNo =
+        d.deviationRef ?? String(targetRow.getCell(1).value ?? '').trim();
+    } else {
+      // Append after the last existing data row.
+      highestSlot++;
+      const newRowIdx = (slotRows[slotRows.length - 1] ?? 4) + (nextSlotIdx - slotRows.length) + 1;
+      targetRow = sheet.getRow(newRowIdx);
+      assignedNo = d.deviationRef ?? `DEV-${String(highestSlot).padStart(3, '0')}`;
+      nextSlotIdx++;
+    }
+
+    targetRow.getCell(1).value = assignedNo;
+    targetRow.getCell(2).value = today;
+    targetRow.getCell(3).value = d.rfqSectionRef;
+    targetRow.getCell(4).value = d.description;
+    targetRow.getCell(5).value = d.deviationDescription;
+    targetRow.getCell(6).value = d.justification;
+    // 7, 8 left blank for vendor proposal engineer.
+    targetRow.getCell(9).value = 'Deviation';
+    // 10 left blank for Helios.
+  }
 
   const out = await workbook.xlsx.writeBuffer();
   return Buffer.from(out);
