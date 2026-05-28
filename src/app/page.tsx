@@ -134,34 +134,37 @@ type Phase = 'idle' | 'uploading' | 'enriching' | 'done' | 'failed';
 
 export default function Home() {
   const [files, setFiles] = useState<File[]>([]);
-  // Initial phase via lazy initializer: if the URL carries ?job=<uuid> we
-  // start in 'uploading' so the first render already shows the loading
-  // state. Setting it inside the deep-link useEffect would trigger a
-  // cascading render (react-hooks/set-state-in-effect) — we avoid that.
-  const [phase, setPhase] = useState<Phase>(() => {
-    if (typeof window === 'undefined') return 'idle';
-    return new URLSearchParams(window.location.search).has('job')
-      ? 'uploading'
-      : 'idle';
-  });
+  // All client-only state (localStorage, URL params) MUST initialise to
+  // SSR-safe defaults; reading window during the lazy initializer would
+  // produce a different first frame on the client than the server and
+  // trigger a hydration mismatch. The initial-mount useEffect below
+  // synchronises the real values once the client has taken over.
+  const [phase, setPhase] = useState<Phase>('idle');
   const [result, setResult] = useState<FullJob | null>(null);
   const [enrichStats, setEnrichStats] = useState<EnrichStats | null>(null);
   const [riskStats, setRiskStats] = useState<RiskStats | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Lazy initializer reads localStorage on first render to avoid a
-  // cascading setState in useEffect (react-hooks/set-state-in-effect).
-  // The SSR pass returns [] because window is undefined; client-side
-  // hydration then sees the persisted list.
-  const [recentJobs, setRecentJobs] = useState<RecentJob[]>(() =>
-    loadRecentJobs(),
-  );
+  const [recentJobs, setRecentJobs] = useState<RecentJob[]>([]);
 
-  // Deep-link support: `?job=<uuid>` loads an existing job's state on mount.
-  // Useful when the in-flight enrich fetch was cancelled (e.g. dev HMR
-  // re-mount during a long sweep) so the user doesn't have to re-upload.
+  // Single mount-time effect that handles BOTH (a) reading the recent-jobs
+  // list from localStorage and (b) the deep-link fetch when `?job=<uuid>`
+  // is present. Both reads MUST happen after hydration to avoid SSR
+  // mismatch; on the server we have no localStorage and no URL params, so
+  // the first frame uses safe defaults and this effect reconciles. The
+  // eslint-disable lines below are required: this is the documented
+  // pattern for synchronising client-only external state and the
+  // react-hooks/set-state-in-effect rule doesn't have an exception for
+  // the SSR-bridging case.
   useEffect(() => {
+    const stored = loadRecentJobs();
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (stored.length > 0) setRecentJobs(stored);
+
     const jobId = new URLSearchParams(window.location.search).get('job');
     if (!jobId) return;
+
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setPhase('uploading');
     fetch(`/api/jobs/${jobId}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(`Job ${jobId} not found (HTTP ${r.status})`);
