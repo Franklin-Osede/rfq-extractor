@@ -10,6 +10,8 @@
     "db:push": "drizzle-kit push",
     "db:generate": "drizzle-kit generate",
     "db:studio": "drizzle-kit studio --port ${DB_STUDIO_PORT:-4712}",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "test:sis-parser": "tsx scripts/test-sis-parser.mjs",
     "test:validator": "tsx scripts/test-validator.mjs",
     "test:tcm-parser": "tsx scripts/test-tcm-parser.mjs",
@@ -39,6 +41,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.15.0",
     "@tailwindcss/postcss": "^4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
@@ -50,6 +53,7 @@
     "eslint-config-next": "16.2.6",
     "tailwindcss": "^4",
     "tsx": "^4.20.0",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.7"
   }
 }

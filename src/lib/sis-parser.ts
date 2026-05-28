@@ -41,15 +41,21 @@ export function parseSisAllocations(pages: string[]): SisAllocationMap {
   const map: SisAllocationMap = new Map();
 
   // Find the page containing the SIL allocation table. The expected header
-  // text is "SIL Allocation by Tag", but we accept any page that has both
-  // "SIL" and multiple `SIL [1234]` tokens, to survive minor doc edits.
+  // text is "SIL Allocation by Tag", and the right page is the one with
+  // the MOST `SIL [1234]` tokens (the actual table, not a TOC reference).
+  // Picking the first match would break on docs where a contents page
+  // mentions "SIL Allocation by Tag" and the prose around it happens to
+  // include a handful of SIL tokens. We also require at least 3 SIL tokens
+  // to suppress noise pages.
   let tablePageIdx = -1;
+  let bestSilTokens = 0;
   for (let i = 0; i < pages.length; i++) {
     const p = pages[i];
     const silTokens = (p.match(/\bSIL\s*[-]?\s*[1234]\b/g) ?? []).length;
-    if (silTokens >= 5 && /SIL Allocation by Tag|allocation by tag|SIL allocation/i.test(p)) {
+    const hasHeader = /SIL Allocation by Tag|allocation by tag|SIL allocation/i.test(p);
+    if (hasHeader && silTokens >= 3 && silTokens > bestSilTokens) {
       tablePageIdx = i;
-      break;
+      bestSilTokens = silTokens;
     }
   }
   if (tablePageIdx === -1) return map;
