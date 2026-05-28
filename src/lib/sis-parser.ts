@@ -87,10 +87,19 @@ export function extractSilFromLine(line: string): 1 | 2 | 3 | 4 | null {
 /**
  * Extract canonical tag IDs from one SIL-table line.
  *
- * Handles the three Helios conventions:
- *   - Pair / triple slash notation:  SDV-1041A/B, FV-2021A/B/C
- *   - Range notation:                SDV-7001 to 7006
- *   - Bare single tag:               BDV-4003
+ * Handles the Helios conventions we observed in `HEL-GS-SIS-007 Rev 3`:
+ *   - Pair / triple slash notation:        SDV-1041A/B, FV-2021A/B/C
+ *   - Bare range notation:                 SDV-7001 to 7006
+ *   - Range with shared letter suffix:     ZV-8011A to 8015A
+ *   - Bare single tag:                     BDV-4003
+ *
+ * NOT supported (no occurrence in the Helios package; would also be
+ * ambiguous to expand safely):
+ *   - "SDV-1041/B" — missing first letter. Treat as malformed; if you
+ *     hit this in another customer's doc, add an inference rule there.
+ *
+ * Output is always canonical UPPERCASE so the downstream Map lookup
+ * matches TCM tags regardless of source casing.
  *
  * Tag prefixes recognised: SDV, BDV, FV, LV, PCV, TV, ZV, HV, ESDV, BV.
  * Add more here if a new tag prefix appears in the table.
@@ -99,40 +108,60 @@ export function extractTagsFromLine(line: string): string[] {
   const tags = new Set<string>();
   const PREFIX = '(SDV|BDV|ESDV|FV|LV|PCV|TV|ZV|HV|BV)';
 
-  // Pattern 1: range "SDV-7001 to 7006"
+  // Pattern 1a: range with shared suffix "ZV-8011A to 8015A".
+  // We match the suffix on the FROM side and require it (when present) to
+  // appear identically on the TO side; otherwise we fall through to the
+  // bare-range pattern.
+  const rangeSuffixRe = new RegExp(
+    `${PREFIX}-(\\d+)([A-Z])\\s+to\\s+(\\d+)([A-Z])`,
+    'gi',
+  );
+  const consumedRanges = new Set<string>();
+  for (const m of line.matchAll(rangeSuffixRe)) {
+    const prefix = m[1].toUpperCase();
+    const fromN = parseInt(m[2], 10);
+    const fromLetter = m[3].toUpperCase();
+    const toN = parseInt(m[4], 10);
+    const toLetter = m[5].toUpperCase();
+    if (fromLetter !== toLetter) continue;
+    if (!(Number.isFinite(fromN) && Number.isFinite(toN) && toN >= fromN && toN - fromN < 50)) continue;
+    for (let n = fromN; n <= toN; n++) tags.add(`${prefix}-${n}${fromLetter}`);
+    consumedRanges.add(`${prefix}-${fromN}-${toN}`);
+  }
+
+  // Pattern 1b: bare range "SDV-7001 to 7006". Skip ranges already consumed
+  // by 1a (so we don't expand them as bare on top of suffixed).
   const rangeRe = new RegExp(`${PREFIX}-(\\d+)\\s+to\\s+(\\d+)`, 'gi');
   for (const m of line.matchAll(rangeRe)) {
     const prefix = m[1].toUpperCase();
     const from = parseInt(m[2], 10);
     const to = parseInt(m[3], 10);
-    if (Number.isFinite(from) && Number.isFinite(to) && to >= from && to - from < 50) {
-      for (let n = from; n <= to; n++) tags.add(`${prefix}-${n}`);
-    }
+    if (consumedRanges.has(`${prefix}-${from}-${to}`)) continue;
+    if (!(Number.isFinite(from) && Number.isFinite(to) && to >= from && to - from < 50)) continue;
+    for (let n = from; n <= to; n++) tags.add(`${prefix}-${n}`);
   }
 
-  // Pattern 2: paired / multi-slash "SDV-1041A/B" or "FV-2021A/B/C"
-  const pairRe = new RegExp(`${PREFIX}-(\\d+)([A-Z](?:\\s*/\\s*[A-Z])+)`, 'gi');
+  // Pattern 2: paired / multi-slash "SDV-1041A/B" or "FV-2021A/B/C".
+  // Case-insensitive on the letters; canonicalize to uppercase in output.
+  const pairRe = new RegExp(`${PREFIX}-(\\d+)([A-Za-z](?:\\s*/\\s*[A-Za-z])+)`, 'gi');
   for (const m of line.matchAll(pairRe)) {
     const prefix = m[1].toUpperCase();
     const base = m[2];
-    const letters = m[3].split('/').map((s) => s.trim()).filter(Boolean);
+    const letters = m[3].split('/').map((s) => s.trim().toUpperCase()).filter(Boolean);
     for (const l of letters) tags.add(`${prefix}-${base}${l}`);
   }
 
-  // Pattern 3: bare single tag "BDV-4003" or "SDV-1041A" (after we've
-  // already collected the slash-paired forms; the regex below would match
-  // "SDV-1041A" out of "SDV-1041A/B" so we filter via the existing set).
-  const singleRe = new RegExp(`${PREFIX}-(\\d+)([A-Z]?)(?![A-Z0-9/])`, 'gi');
+  // Pattern 3: bare single tag "BDV-4003" or "SDV-1041A". Case-insensitive
+  // letter; canonicalized uppercase in output.
+  const singleRe = new RegExp(`${PREFIX}-(\\d+)([A-Za-z]?)(?![A-Za-z0-9/])`, 'gi');
   for (const m of line.matchAll(singleRe)) {
     const prefix = m[1].toUpperCase();
     const base = m[2];
-    const letter = m[3] ?? '';
+    const letter = (m[3] ?? '').toUpperCase();
     const tag = `${prefix}-${base}${letter}`;
     // Don't add a bare "SDV-1041A" if we already split a pair that covers it.
     if (!Array.from(tags).some((t) => t.startsWith(`${prefix}-${base}`) && t !== tag)) {
       tags.add(tag);
-    } else if (tags.has(tag)) {
-      // already there
     }
   }
 

@@ -87,6 +87,22 @@ type EnrichStats = {
   citations: { total: number; verified: number };
 };
 
+type RiskStats = {
+  tagsAnalysed: number;
+  risksDetected: number;
+  failed: number;
+  errors: Array<{ tagNo: string; error: string }>;
+  bySeverity: Record<string, number>;
+  sis?: {
+    sisTableFound: boolean;
+    sisTagsAllocated: number;
+    hardMismatches: number;
+    tcmSilent: number;
+    aligned: number;
+    notInSis: number;
+  };
+};
+
 type Phase = 'idle' | 'uploading' | 'enriching' | 'done' | 'failed';
 
 export default function Home() {
@@ -103,6 +119,7 @@ export default function Home() {
   });
   const [result, setResult] = useState<FullJob | null>(null);
   const [enrichStats, setEnrichStats] = useState<EnrichStats | null>(null);
+  const [riskStats, setRiskStats] = useState<RiskStats | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Deep-link support: `?job=<uuid>` loads an existing job's state on mount.
@@ -214,9 +231,27 @@ export default function Home() {
       setEnrichStats(await enrichRes.json());
 
       // Then fire cross-doc risk detection (29 tags × 1 LLM call each).
-      // This is much faster than enrich but still ~10-20 seconds.
+      // This is much faster than enrich but still ~10-20 seconds. The
+      // endpoint returns `{ failed, errors, ... }` even on 200 OK — we
+      // capture both so a partial sweep (some tags failed individually)
+      // is visible to the user, not silently swallowed.
       if (initialState.tagRequirements.length > 0) {
-        await fetch(`/api/jobs/${postBody.jobId}/risks`, { method: 'POST' });
+        const riskRes = await fetch(`/api/jobs/${postBody.jobId}/risks`, {
+          method: 'POST',
+        });
+        if (riskRes.ok) {
+          setRiskStats((await riskRes.json()) as RiskStats);
+        } else {
+          // Non-200 from /risks is non-fatal — the job still has enrichment
+          // results. Surface the warning but don't fail the whole flow.
+          setRiskStats({
+            tagsAnalysed: 0,
+            risksDetected: 0,
+            failed: initialState.tagRequirements.length,
+            errors: [{ tagNo: '*', error: `risk endpoint HTTP ${riskRes.status}` }],
+            bySeverity: {},
+          });
+        }
       }
 
       // Re-fetch full job state with enriched requirements + risk signals.
@@ -317,6 +352,10 @@ export default function Home() {
 
       {phase === 'done' && result && <NoCorpusWarning data={result} stats={enrichStats} />}
 
+      {phase === 'done' && riskStats && riskStats.failed > 0 && (
+        <PartialRiskWarning stats={riskStats} />
+      )}
+
       {phase === 'done' && result && result.risks && result.risks.length > 0 && (
         <RiskPanel risks={result.risks} />
       )}
@@ -339,6 +378,25 @@ export default function Home() {
 }
 
 // ─── Components ──────────────────────────────────────────────────────────────
+
+/**
+ * Visible banner when the /risks endpoint reported per-tag failures. The
+ * default flow proceeds even with partial failures (some tags missing is
+ * better than no risks at all), but the user must see which tags didn't
+ * get analysed so they don't assume "no signal = no risk".
+ */
+function PartialRiskWarning({ stats }: { stats: RiskStats }) {
+  const sample = stats.errors.slice(0, 5).map((e) => e.tagNo).join(', ');
+  const overflow = stats.errors.length > 5 ? `, +${stats.errors.length - 5} more` : '';
+  return (
+    <section className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
+      <strong>⚠ Partial risk sweep:</strong> {stats.failed} of {stats.tagsAnalysed} tag
+      analyses failed and were not surfaced as risks. Affected tags: {sample}
+      {overflow}. The displayed risk panel covers {stats.risksDetected} signals
+      from the tags that succeeded.
+    </section>
+  );
+}
 
 /**
  * Cross-document review-risk panel. Rendered FIRST in the demo flow:
