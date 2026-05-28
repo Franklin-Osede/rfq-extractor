@@ -13,6 +13,15 @@
  */
 
 import { Fragment, useEffect, useState } from 'react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import {
+  clearRecentJobs,
+  loadRecentJobs,
+  removeRecentJob,
+  saveRecentJob,
+  type RecentJob,
+} from '@/lib/recent-jobs';
 
 type DocOut = {
   id: string;
@@ -138,6 +147,13 @@ export default function Home() {
   const [enrichStats, setEnrichStats] = useState<EnrichStats | null>(null);
   const [riskStats, setRiskStats] = useState<RiskStats | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Lazy initializer reads localStorage on first render to avoid a
+  // cascading setState in useEffect (react-hooks/set-state-in-effect).
+  // The SSR pass returns [] because window is undefined; client-side
+  // hydration then sees the persisted list.
+  const [recentJobs, setRecentJobs] = useState<RecentJob[]>(() =>
+    loadRecentJobs(),
+  );
 
   // Deep-link support: `?job=<uuid>` loads an existing job's state on mount.
   // Useful when the in-flight enrich fetch was cancelled (e.g. dev HMR
@@ -155,6 +171,19 @@ export default function Home() {
         // a job where /risks had errors would look "clean" on deep-link.
         if (data.job.riskRunSummary) setRiskStats(data.job.riskRunSummary);
         setPhase('done');
+        // Refresh the localStorage entry — opening a job counts as "seen".
+        setRecentJobs(
+          saveRecentJob({
+            jobId: data.job.id,
+            savedAt: new Date().toISOString(),
+            status: data.job.status,
+            docCount: data.documents.length,
+            reqCount: data.requirements.length,
+            tagCount: data.tagRequirements.length,
+            riskCount: data.risks.length,
+            failedCount: data.job.riskRunSummary?.failed ?? 0,
+          }),
+        );
       })
       .catch((e) => {
         setError(String(e));
@@ -276,130 +305,375 @@ export default function Home() {
 
       // Re-fetch full job state with enriched requirements + risk signals.
       const getRes2 = await fetch(`/api/jobs/${postBody.jobId}`);
-      setResult(await getRes2.json());
+      const finalState = (await getRes2.json()) as FullJob;
+      setResult(finalState);
       setPhase('done');
+
+      // Persist to localStorage so the user can resume without re-upload.
+      setRecentJobs(
+        saveRecentJob({
+          jobId: finalState.job.id,
+          savedAt: new Date().toISOString(),
+          status: finalState.job.status,
+          docCount: finalState.documents.length,
+          reqCount: finalState.requirements.length,
+          tagCount: finalState.tagRequirements.length,
+          riskCount: finalState.risks.length,
+          failedCount: finalState.job.riskRunSummary?.failed ?? 0,
+        }),
+      );
     } catch (e) {
       setError(String(e));
       setPhase('failed');
     }
   }
 
+  const phaseLabel =
+    phase === 'uploading'
+      ? 'Uploading + parsing…'
+      : phase === 'enriching'
+        ? `Enriching ${result?.requirements.length ?? 0} requirements…`
+        : phase === 'failed'
+          ? 'Failed'
+          : phase === 'done'
+            ? 'Done'
+            : 'Idle';
+
   return (
-    <main className="max-w-7xl mx-auto p-6 font-mono text-sm">
-      <header className="mb-6 border-b pb-4">
-        <h1 className="text-xl font-semibold">Loonar RFQ Assistant</h1>
-        <p className="text-zinc-500 mt-1 text-xs">
-          Drop the Helios RFQ package. The system classifies each file, parses
-          the TCM template, indexes PDF text, and asks an LLM to suggest a
-          compliance status + grounded citations per requirement.
-        </p>
+    <main className="max-w-[1400px] mx-auto p-6 font-mono text-sm">
+      <header className="mb-6 border-b pb-3 flex items-baseline justify-between gap-6">
+        <div>
+          <h1 className="text-xl font-semibold">Loonar RFQ Assistant</h1>
+          <p className="text-zinc-500 mt-1 text-xs">
+            Pre-fill the official Helios TCM with evidence-cited compliance
+            suggestions and cross-document risk signals.
+          </p>
+        </div>
+        <StatusBar phase={phase} phaseLabel={phaseLabel} stats={enrichStats} riskStats={riskStats} />
       </header>
 
-      <section className="mb-8">
-        <div className="border-2 border-dashed border-zinc-300 rounded p-6">
-          <input
-            type="file"
-            multiple
-            onChange={onPick}
-            className="block w-full text-sm file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:bg-black file:text-white hover:file:bg-zinc-800 cursor-pointer"
-          />
-          <p className="mt-2 text-[11px] text-zinc-500">
-            Tip: pick files in multiple clicks to add more. Use the × next to a
-            row to remove a single file.
-          </p>
-          {files.length > 0 && (
-            <div className="mt-3">
-              <div className="flex items-center justify-between mb-2 text-xs">
-                <span className="text-zinc-600">
-                  {files.length} file{files.length === 1 ? '' : 's'} selected
-                </span>
-                <button
-                  onClick={clearFiles}
-                  className="text-zinc-500 hover:text-zinc-900 underline"
-                >
-                  clear all
-                </button>
-              </div>
-              <ul className="space-y-1 text-xs">
-                {files.map((f, i) => (
-                  <li
-                    key={`${f.name}:${f.size}`}
-                    className="flex items-center justify-between bg-zinc-50 rounded px-2 py-1"
-                  >
-                    <span className="text-zinc-700 truncate mr-3">
-                      {f.name}{' '}
-                      <span className="text-zinc-400">({humanSize(f.size)})</span>
+      <div className="grid grid-cols-12 gap-6">
+        {/* ─── Left column: upload + recent jobs ─── */}
+        <div className="col-span-12 lg:col-span-3 space-y-4">
+          <section>
+            <div className="border-2 border-dashed border-zinc-300 rounded p-4">
+              <input
+                type="file"
+                multiple
+                onChange={onPick}
+                className="block w-full text-xs file:mr-3 file:py-1.5 file:px-3 file:rounded file:border-0 file:bg-black file:text-white hover:file:bg-zinc-800 cursor-pointer"
+              />
+              <p className="mt-2 text-[10px] text-zinc-500">
+                Pick files across multiple clicks; × to remove one.
+              </p>
+              {files.length > 0 && (
+                <div className="mt-2">
+                  <div className="flex items-center justify-between mb-1 text-[11px]">
+                    <span className="text-zinc-600">
+                      {files.length} file{files.length === 1 ? '' : 's'}
                     </span>
                     <button
-                      onClick={() => removeFile(i)}
-                      className="text-red-600 hover:text-red-800 text-base leading-none px-1"
-                      aria-label={`Remove ${f.name}`}
-                      title="Remove"
+                      onClick={clearFiles}
+                      className="text-zinc-500 hover:text-zinc-900 underline"
                     >
-                      ×
+                      clear all
                     </button>
-                  </li>
-                ))}
-              </ul>
+                  </div>
+                  <ul className="space-y-0.5 text-[11px]">
+                    {files.map((f, i) => (
+                      <li
+                        key={`${f.name}:${f.size}`}
+                        className="flex items-center justify-between bg-zinc-50 rounded px-2 py-0.5"
+                      >
+                        <span className="text-zinc-700 truncate mr-2">
+                          {f.name}{' '}
+                          <span className="text-zinc-400">
+                            ({humanSize(f.size)})
+                          </span>
+                        </span>
+                        <button
+                          onClick={() => removeFile(i)}
+                          className="text-red-600 hover:text-red-800 text-sm leading-none px-0.5"
+                          aria-label={`Remove ${f.name}`}
+                          title="Remove"
+                        >
+                          ×
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+            <button
+              onClick={onUpload}
+              disabled={
+                phase === 'uploading' || phase === 'enriching' || files.length === 0
+              }
+              className="mt-3 w-full px-3 py-2 rounded bg-black text-white disabled:bg-zinc-400 text-xs"
+            >
+              {phase === 'uploading'
+                ? 'Uploading…'
+                : phase === 'enriching'
+                  ? 'Enriching…'
+                  : 'Upload & process'}
+            </button>
+            {phase === 'done' && result && result.requirements.length === 0 && (
+              <p className="mt-3 p-2 bg-blue-50 border border-blue-200 rounded text-blue-900 text-[11px]">
+                ℹ No TCM template detected. Include
+                <code className="mx-1 px-1 bg-blue-100 rounded">HEL-AZ2-TCM-Template_RFQ-CV-0412.xlsx</code>
+                in the upload to enable enrichment.
+              </p>
+            )}
+            {error && (
+              <pre className="mt-3 p-2 bg-red-50 border border-red-200 rounded text-red-900 overflow-auto whitespace-pre-wrap text-[11px]">
+                {error}
+              </pre>
+            )}
+          </section>
+
+          <RecentJobsPanel
+            jobs={recentJobs}
+            onRemove={(id) => setRecentJobs(removeRecentJob(id))}
+            onClear={() => setRecentJobs(clearRecentJobs())}
+          />
+        </div>
+
+        {/* ─── Right column: results ─── */}
+        <div className="col-span-12 lg:col-span-9 space-y-4">
+          {phase === 'done' && result && (
+            <NoCorpusWarning data={result} stats={enrichStats} />
+          )}
+
+          {phase === 'done' && riskStats && riskStats.failed > 0 && (
+            <PartialRiskWarning stats={riskStats} />
+          )}
+
+          {phase === 'done' &&
+            result &&
+            result.risks &&
+            result.risks.length > 0 && <RiskPanel risks={result.risks} />}
+
+          {enrichStats && phase === 'done' && (
+            <EnrichSummary stats={enrichStats} riskStats={riskStats} />
+          )}
+
+          {phase === 'done' &&
+            result &&
+            result.requirements.length > 0 && (
+              <ExportBar
+                jobId={result.job.id}
+                hasDeviations={result.requirements.some(
+                  (r) => r.reviewStatus === 'deviation',
+                )}
+              />
+            )}
+
+          {result && (
+            <ResultView
+              data={result}
+              phase={phase}
+              onRowUpdated={handleRequirementUpdated}
+            />
+          )}
+
+          {phase === 'idle' && !result && (
+            <div className="rounded border border-zinc-200 bg-zinc-50/40 p-6 text-center text-xs text-zinc-500">
+              Drop the Helios RFQ package on the left, or pick a previous run
+              from <strong className="text-zinc-700">Recent jobs</strong>.
             </div>
           )}
         </div>
-        <button
-          onClick={onUpload}
-          disabled={phase === 'uploading' || phase === 'enriching' || files.length === 0}
-          className="mt-3 px-4 py-2 rounded bg-black text-white disabled:bg-zinc-400"
-        >
-          {phase === 'uploading'
-            ? 'Uploading + parsing…'
-            : phase === 'enriching'
-              ? `Enriching ${result?.requirements.length ?? 0} requirements with LLM…`
-              : 'Upload & process'}
-        </button>
-        {phase === 'done' && result && result.requirements.length === 0 && (
-          <p className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded text-blue-900 text-xs">
-            ℹ Upload successful, but no TCM template was detected in this
-            batch. To run compliance enrichment, include the file
-            <code className="mx-1 px-1 bg-blue-100 rounded">HEL-AZ2-TCM-Template_RFQ-CV-0412.xlsx</code>
-            in the upload. You can add it now and re-process.
-          </p>
-        )}
-        {error && (
-          <pre className="mt-3 p-3 bg-red-50 border border-red-200 rounded text-red-900 overflow-auto whitespace-pre-wrap">
-            {error}
-          </pre>
-        )}
-      </section>
-
-      {phase === 'done' && result && <NoCorpusWarning data={result} stats={enrichStats} />}
-
-      {phase === 'done' && riskStats && riskStats.failed > 0 && (
-        <PartialRiskWarning stats={riskStats} />
-      )}
-
-      {phase === 'done' && result && result.risks && result.risks.length > 0 && (
-        <RiskPanel risks={result.risks} />
-      )}
-
-      {enrichStats && phase === 'done' && (
-        <EnrichSummary stats={enrichStats} riskStats={riskStats} />
-      )}
-
-      {phase === 'done' && result && result.requirements.length > 0 && (
-        <ExportBar jobId={result.job.id} hasDeviations={result.requirements.some((r) => r.reviewStatus === 'deviation')} />
-      )}
-
-      {result && (
-        <ResultView
-          data={result}
-          phase={phase}
-          onRowUpdated={handleRequirementUpdated}
-        />
-      )}
+      </div>
     </main>
   );
 }
 
 // ─── Components ──────────────────────────────────────────────────────────────
+
+/**
+ * Compact status bar shown in the header. Renders one of three modes:
+ *   - phase indicator dot + label while uploading / enriching / failed
+ *   - LLM cost + latency telemetry once enrichment has run at least once
+ *   - risk severity counts once the risk sweep has run
+ */
+function StatusBar({
+  phase,
+  phaseLabel,
+  stats,
+  riskStats,
+}: {
+  phase: Phase;
+  phaseLabel: string;
+  stats: EnrichStats | null;
+  riskStats: RiskStats | null;
+}) {
+  const enrichLlm = stats?.llm;
+  const risksLlm = riskStats?.llm;
+  const totalCost = (enrichLlm?.costUsd ?? 0) + (risksLlm?.costUsd ?? 0);
+  const totalCalls = (enrichLlm?.calls ?? 0) + (risksLlm?.calls ?? 0);
+
+  const phaseColor =
+    phase === 'failed'
+      ? 'bg-red-500'
+      : phase === 'done'
+        ? 'bg-emerald-500'
+        : phase === 'idle'
+          ? 'bg-zinc-300'
+          : 'bg-amber-500 animate-pulse';
+
+  return (
+    <div className="flex items-center gap-4 text-[11px] text-zinc-600">
+      <div className="flex items-center gap-1.5">
+        <span className={`inline-block w-2 h-2 rounded-full ${phaseColor}`} />
+        <span>{phaseLabel}</span>
+      </div>
+      {totalCalls > 0 && (
+        <>
+          <span className="text-zinc-300">·</span>
+          <span>
+            <strong>{totalCalls}</strong> LLM calls
+          </span>
+          <span className="text-zinc-300">·</span>
+          <span>
+            <strong>${totalCost.toFixed(4)}</strong>
+          </span>
+        </>
+      )}
+      {riskStats && (
+        <>
+          <span className="text-zinc-300">·</span>
+          <span className="text-rose-700">
+            <strong>{riskStats.bySeverity?.high ?? 0}</strong> high
+          </span>
+          {(riskStats.bySeverity?.medium ?? 0) > 0 && (
+            <span className="text-amber-700">
+              <strong>{riskStats.bySeverity.medium}</strong> med
+            </span>
+          )}
+          {(riskStats.bySeverity?.low ?? 0) > 0 && (
+            <span className="text-zinc-500">
+              <strong>{riskStats.bySeverity.low}</strong> low
+            </span>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Local-only "recent jobs" panel. Reads/writes localStorage; lets the
+ * user resume any previously-seen run by deep-link without re-uploading
+ * the 14-doc package. No backend involvement — server remains the source
+ * of truth for actual job data.
+ */
+function RecentJobsPanel({
+  jobs,
+  onRemove,
+  onClear,
+}: {
+  jobs: RecentJob[];
+  onRemove: (jobId: string) => void;
+  onClear: () => void;
+}) {
+  if (jobs.length === 0) {
+    return (
+      <aside className="rounded border border-zinc-200 bg-zinc-50/40 p-3 text-xs">
+        <div className="font-semibold text-zinc-700 mb-1">Recent jobs</div>
+        <p className="text-zinc-500">
+          Your uploads will appear here for one-click resume.
+        </p>
+      </aside>
+    );
+  }
+  return (
+    <aside className="rounded border border-zinc-200 bg-zinc-50/40 p-3 text-xs">
+      <div className="flex items-center justify-between mb-2">
+        <div className="font-semibold text-zinc-700">
+          Recent jobs ({jobs.length})
+        </div>
+        <button
+          onClick={onClear}
+          className="text-[10px] text-zinc-500 hover:text-zinc-900 underline"
+          title="Remove every entry from localStorage. The server-side jobs are untouched."
+        >
+          clear all
+        </button>
+      </div>
+      <ul className="space-y-1.5">
+        {jobs.map((j) => (
+          <li
+            key={j.jobId}
+            className="rounded border border-zinc-200 bg-white px-2 py-1.5 hover:border-zinc-300"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <a
+                href={`/?job=${j.jobId}`}
+                className="font-mono text-[11px] text-zinc-800 hover:underline truncate"
+                title={j.jobId}
+              >
+                {j.jobId.slice(0, 8)}…
+              </a>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  onClick={() => {
+                    void navigator.clipboard.writeText(
+                      `${window.location.origin}/?job=${j.jobId}`,
+                    );
+                  }}
+                  className="text-[10px] text-zinc-500 hover:text-zinc-900"
+                  title="Copy deep-link to clipboard"
+                >
+                  copy
+                </button>
+                <button
+                  onClick={() => onRemove(j.jobId)}
+                  className="text-red-600 hover:text-red-800 text-sm leading-none"
+                  aria-label={`Remove ${j.jobId}`}
+                  title="Remove from this list"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-zinc-500">
+              <span>
+                R: <strong className="text-zinc-700">{j.reqCount}</strong>
+              </span>
+              <span>
+                T: <strong className="text-zinc-700">{j.tagCount}</strong>
+              </span>
+              <span>
+                Risks: <strong className="text-zinc-700">{j.riskCount}</strong>
+              </span>
+              {j.failedCount > 0 && (
+                <span className="text-amber-700">
+                  ⚠ {j.failedCount} failed
+                </span>
+              )}
+              <span className="text-zinc-400">{relativeTime(j.savedAt)}</span>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </aside>
+  );
+}
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (!Number.isFinite(then)) return iso;
+  const delta = Math.max(0, Date.now() - then);
+  const s = Math.round(delta / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  return `${d}d ago`;
+}
 
 /**
  * Visible banner when the /risks endpoint reported per-tag failures. The
@@ -411,12 +685,15 @@ function PartialRiskWarning({ stats }: { stats: RiskStats }) {
   const sample = stats.errors.slice(0, 5).map((e) => e.tagNo).join(', ');
   const overflow = stats.errors.length > 5 ? `, +${stats.errors.length - 5} more` : '';
   return (
-    <section className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm text-amber-900">
-      <strong>⚠ Partial risk sweep:</strong> {stats.failed} of {stats.tagsAnalysed} tag
-      analyses failed and were not surfaced as risks. Affected tags: {sample}
-      {overflow}. The displayed risk panel covers {stats.risksDetected} signals
-      from the tags that succeeded.
-    </section>
+    <Alert className="border-amber-300 bg-amber-50 text-amber-900">
+      <AlertTitle className="text-amber-900">
+        ⚠ Partial risk sweep — {stats.failed} of {stats.tagsAnalysed} tag analyses failed
+      </AlertTitle>
+      <AlertDescription className="text-amber-900/90">
+        Affected: {sample}{overflow}. The panel below covers{' '}
+        {stats.risksDetected} signals from the tags that succeeded.
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -432,11 +709,28 @@ function PartialRiskWarning({ stats }: { stats: RiskStats }) {
  */
 function RiskPanel({ risks }: { risks: RiskRow[] }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Default filter set: high-only on first render. The 14 low-severity
+  // SIS reminders make the panel noisy in demo; users opt in via toggle.
+  const [sevFilter, setSevFilter] = useState<Set<'high' | 'medium' | 'low'>>(
+    new Set(['high']),
+  );
+  const [scopeFilter, setScopeFilter] = useState<Set<string>>(new Set());
+
   const counts = risks.reduce<Record<string, number>>((acc, r) => {
     acc[r.severity] = (acc[r.severity] ?? 0) + 1;
     return acc;
   }, {});
-  const sorted = [...risks].sort((a, b) => {
+  const scopeCounts = risks.reduce<Record<string, number>>((acc, r) => {
+    acc[r.scope] = (acc[r.scope] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  const filtered = risks.filter((r) => {
+    if (!sevFilter.has(r.severity)) return false;
+    if (scopeFilter.size > 0 && !scopeFilter.has(r.scope)) return false;
+    return true;
+  });
+  const sorted = [...filtered].sort((a, b) => {
     const order = { high: 0, medium: 1, low: 2 };
     return order[a.severity] - order[b.severity] || a.tagNo.localeCompare(b.tagNo);
   });
@@ -450,32 +744,97 @@ function RiskPanel({ risks }: { risks: RiskRow[] }) {
     });
   }
 
+  function toggleSev(sev: 'high' | 'medium' | 'low') {
+    setSevFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(sev)) next.delete(sev);
+      else next.add(sev);
+      return next;
+    });
+  }
+
+  function toggleScope(scope: string) {
+    setScopeFilter((prev) => {
+      const next = new Set(prev);
+      if (next.has(scope)) next.delete(scope);
+      else next.add(scope);
+      return next;
+    });
+  }
+
   return (
-    <section className="mb-8 border-2 border-rose-300 rounded overflow-hidden bg-white">
+    <section className="mb-4 border-2 border-rose-300 rounded overflow-hidden bg-white">
       <header className="px-4 py-3 bg-rose-50 border-b border-rose-200">
         <h2 className="text-sm font-semibold text-rose-900">
-          ⚠ Cross-document review risks ({risks.length})
+          ⚠ Cross-document review risks ({sorted.length}
+          {filtered.length !== risks.length ? ` of ${risks.length}` : ''})
         </h2>
         <p className="text-[11px] text-rose-800 mt-1">
-          The TCM Tag-Level Confirmation and the IDS Attachment A disagree on
-          these tags. Surfaced for triage with literal citations from each
-          source — not auto-resolved.
+          Tag-level mismatches across binding documents (TCM vs IDS, TCM vs
+          SIS). Filter to focus.
         </p>
-        <div className="flex gap-4 mt-2 text-[11px]">
-          {counts.high > 0 && (
-            <span className="text-rose-800">
-              <strong>{counts.high}</strong> high
-            </span>
-          )}
-          {counts.medium > 0 && (
-            <span className="text-amber-700">
-              <strong>{counts.medium}</strong> medium
-            </span>
-          )}
-          {counts.low > 0 && (
-            <span className="text-zinc-700">
-              <strong>{counts.low}</strong> low
-            </span>
+        <div className="flex flex-wrap items-center gap-2 mt-2 text-[10px]">
+          <span className="text-zinc-500 uppercase tracking-wide mr-1">
+            Severity:
+          </span>
+          {(['high', 'medium', 'low'] as const).map((sev) => {
+            const active = sevFilter.has(sev);
+            const c = counts[sev] ?? 0;
+            if (c === 0) return null;
+            return (
+              <button
+                key={sev}
+                onClick={() => toggleSev(sev)}
+                className={`px-2 py-0.5 rounded border uppercase tracking-wide font-medium ${
+                  active
+                    ? sev === 'high'
+                      ? 'bg-rose-100 text-rose-800 border-rose-300'
+                      : sev === 'medium'
+                        ? 'bg-amber-100 text-amber-800 border-amber-300'
+                        : 'bg-zinc-100 text-zinc-700 border-zinc-300'
+                    : 'bg-white text-zinc-400 border-zinc-200 hover:border-zinc-400'
+                }`}
+              >
+                {sev} ({c})
+              </button>
+            );
+          })}
+          <span className="text-zinc-300 mx-1">|</span>
+          <span className="text-zinc-500 uppercase tracking-wide mr-1">
+            Scope:
+          </span>
+          {Object.entries(scopeCounts).map(([scope, c]) => {
+            const active = scopeFilter.has(scope);
+            const label =
+              scope === 'tag-sil-classification'
+                ? 'SIL'
+                : scope === 'tag-service-description'
+                  ? 'service'
+                  : scope;
+            return (
+              <button
+                key={scope}
+                onClick={() => toggleScope(scope)}
+                className={`px-2 py-0.5 rounded border uppercase tracking-wide font-medium ${
+                  active
+                    ? 'bg-zinc-800 text-white border-zinc-800'
+                    : 'bg-white text-zinc-600 border-zinc-200 hover:border-zinc-400'
+                }`}
+              >
+                {label} ({c})
+              </button>
+            );
+          })}
+          {(scopeFilter.size > 0 || sevFilter.size !== 1 || !sevFilter.has('high')) && (
+            <button
+              onClick={() => {
+                setSevFilter(new Set(['high']));
+                setScopeFilter(new Set());
+              }}
+              className="text-[10px] text-zinc-500 hover:text-zinc-900 underline ml-1"
+            >
+              reset
+            </button>
           )}
         </div>
       </header>
@@ -572,24 +931,30 @@ function ScopeChip({ scope }: { scope: string }) {
         ? 'service'
         : scope;
   return (
-    <span className="inline-block px-1.5 py-0.5 rounded text-[9px] border border-zinc-300 bg-white text-zinc-600 font-medium uppercase tracking-wide">
+    <Badge
+      variant="outline"
+      className="text-[9px] uppercase tracking-wide text-zinc-600"
+    >
       {label}
-    </span>
+    </Badge>
   );
 }
 
 function SeverityPill({ severity }: { severity: 'high' | 'medium' | 'low' }) {
-  const styles = {
+  // Backed by shadcn Badge; per-severity colours stay tied to the domain
+  // (rose = blocker, amber = caution, zinc = informational reminder).
+  const tone = {
     high: 'bg-rose-100 text-rose-800 border-rose-300',
     medium: 'bg-amber-100 text-amber-800 border-amber-300',
     low: 'bg-zinc-100 text-zinc-700 border-zinc-300',
-  };
+  }[severity];
   return (
-    <span
-      className={`inline-block px-2 py-0.5 rounded text-[10px] border font-medium uppercase tracking-wide ${styles[severity]}`}
+    <Badge
+      variant="outline"
+      className={`uppercase tracking-wide font-medium ${tone}`}
     >
       {severity}
-    </span>
+    </Badge>
   );
 }
 
