@@ -12,7 +12,10 @@ import path from 'node:path';
 import ExcelJS from 'exceljs';
 
 const API = process.env.API_BASE ?? 'http://localhost:4711';
-const SOURCE_DIR = 'uploads/0eeeec04-4ba3-49aa-9c02-d539bb4918a7';
+// Point this at any folder containing the 14-file Helios package. The default
+// is convenient on the original author's machine; on a fresh clone, set
+// SOURCE_DIR=/path/to/your/helios/files before running.
+const SOURCE_DIR = process.env.SOURCE_DIR ?? 'uploads/0eeeec04-4ba3-49aa-9c02-d539bb4918a7';
 const TMP_TCM = '/tmp/dry-run-tcm.xlsx';
 
 const failures = [];
